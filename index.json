@@ -7,6 +7,9 @@
       "name": "No Idle",
       "description": "Prevent status from idling when Discord is in the background.",
       "author": "k1ng_op <641266820187160576>",
+      "contributors": [
+        "amsryq"
+      ],
       "icon": "StatusIdle",
       "channels": {
         "latest": "1.0.1"
@@ -201,6 +204,9 @@
       "name": "Tenor GIF Search",
       "description": "Brings back Tenor GIF search to Discord.",
       "author": "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")",
+      "contributors": [
+        "Livie <755950362342457384>"
+      ],
       "icon": "GifIcon",
       "channels": {
         "latest": "1.0.0"
@@ -225,6 +231,9 @@
       "name": "Developer Kit",
       "description": "Tools assisting Revenge developers.",
       "author": "Revenge",
+      "contributors": [
+        "Palm <629368283354628116> (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")"
+      ],
       "icon": "WrenchIcon",
       "channels": {
         "latest": "1.1.2"
@@ -269,6 +278,33 @@
             "revenge.api.hidden": {
               "version": "*",
               "optional": true
+            }
+          }
+        }
+      }
+    },
+    "wolfie.global-badges": {
+      "name": "Global Badges",
+      "description": "Show profile badges from other Discord clients and BadgeVault.",
+      "author": "Wolfie <347096063569559553>",
+      "contributors": [
+        "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")"
+      ],
+      "icon": "AwardIcon",
+      "channels": {
+        "latest": "1.0.0"
+      },
+      "versions": {
+        "1.0.0": {
+          "url": "https://revenge-mod.github.io/revenge-community-plugins/pool/wolfie.global-badges@1.0.0.zip",
+          "sha256": "a0cfcfbd146ef6189e4ecb1900e828db945fac4435c8ff69e74495b3b63e05cc",
+          "size": 2849,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
             }
           }
         }
