@@ -6,16 +6,29 @@
     "k1ngop.no-idle": {
       "name": "No Idle",
       "description": "Prevent status from idling when Discord is in the background.",
-      "author": "k1ng_op <641266820187160576>, amsryq",
+      "author": "k1ng_op <641266820187160576>",
       "icon": "StatusIdle",
       "channels": {
-        "latest": "1.0.0"
+        "latest": "1.0.1"
       },
       "versions": {
         "1.0.0": {
           "url": "https://revenge-mod.github.io/revenge-community-plugins/pool/k1ngop.no-idle@1.0.0.zip",
           "sha256": "41544fdf3ada6a9fade471785041ba352e1b79d5658ddb1938d390925ef58e82",
           "size": 625,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        },
+        "1.0.1": {
+          "url": "https://revenge-mod.github.io/revenge-community-plugins/pool/k1ngop.no-idle@1.0.1.zip",
+          "sha256": "7e6439375227bb1ec9e4b92a93fefb43ed9441635b89ac6732d515017f06a387",
+          "size": 638,
           "dependencies": {
             "revenge.api": {
               "version": ">=1 <2"
