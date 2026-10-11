@@ -3,6 +3,30 @@
   "name": "Revenge Community Plugins",
   "description": "Plugins maintained by the Revenge community.",
   "plugins": {
+    "k1ngop.no-idle": {
+      "name": "No Idle",
+      "description": "Prevent status from idling when Discord is in the background.",
+      "author": "k1ng_op <641266820187160576>, amsryq",
+      "icon": "StatusIdle",
+      "channels": {
+        "latest": "1.0.0"
+      },
+      "versions": {
+        "1.0.0": {
+          "url": "https://revenge-mod.github.io/revenge-community-plugins/pool/k1ngop.no-idle@1.0.0.zip",
+          "sha256": "41544fdf3ada6a9fade471785041ba352e1b79d5658ddb1938d390925ef58e82",
+          "size": 625,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        }
+      }
+    },
     "palmdevs.better-chat-buttons": {
       "name": "Better Chat Buttons",
       "description": "Hiding all annoying chat buttons, or making them never collapse, all configurable.",
