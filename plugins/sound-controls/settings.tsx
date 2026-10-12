@@ -66,7 +66,7 @@ export default function SettingsComponent({ api: { jsonStorage } }: Props) {
 											</Text>
 										) : (
 											<Text key={name} variant="text-sm/normal">
-												Preview is unavaiable
+												Preview is unavailable
 											</Text>
 										),
 									)}
