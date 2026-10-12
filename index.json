@@ -3,6 +3,33 @@
   "name": "Revenge Community Plugins",
   "description": "Plugins maintained by the Revenge community.",
   "plugins": {
+    "contrabag.file-size-on-picker": {
+      "name": "File Size on Picker",
+      "description": "Show file sizes in the media picker.",
+      "author": "contrabags <780075200950566933> (https://github.com/contrabag \"GitHub\")",
+      "contributors": [
+        "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")"
+      ],
+      "icon": "FileIcon",
+      "channels": {
+        "latest": "1.0.0"
+      },
+      "versions": {
+        "1.0.0": {
+          "url": "https://revenge-mod.github.io/revenge-community-plugins/pool/contrabag.file-size-on-picker@1.0.0.zip",
+          "sha256": "4fa01b703bfbdb6a1c1c1480c4542775bfe234bc032a2c5725e9ae2aedb28b70",
+          "size": 1859,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        }
+      }
+    },
     "k1ngop.anonymous-file-names": {
       "name": "Anonymous File Names",
       "description": "Randomizes file names before you upload them.",
