@@ -47,7 +47,7 @@ export default plugin<{ jsonStorage: Settings }>({
 								'This Discord version has an unsupported sound player.',
 							),
 						)
-						plugin.disable().catch(error => plugin.reportError(error))
+						plugin.disable()
 						return
 					}
 
