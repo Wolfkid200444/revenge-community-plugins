@@ -28,6 +28,14 @@ interface TypingIndicatorInnerProps {
 	cleanUp: () => void
 }
 
+type TypingProps = Pick<TypingIndicatorInnerProps, 'channel' | 'typingUserIds'>
+
+interface CustomTypingIndicatorProps extends TypingProps {
+	config: unknown
+	username: string
+	onPress: () => void
+}
+
 type RenderTypingIndicator = (
 	key: string,
 	item: { channel: BasicChannel; typingUserIds: string[] },
@@ -147,21 +155,58 @@ function patchTypingIndicator(
 	})
 }
 
-function patchTypingView(tree: ReactNode, props: TypingIndicatorInnerProps) {
-	if (!props.typingUserIds.length) return tree
+function patchTypingView(
+	tree: ReactNode,
+	{ channel, typingUserIds }: TypingProps,
+) {
+	if (!typingUserIds.length) return tree
 
 	return replaceElement(
 		tree,
-		element => element.type === Design.Text,
-		text => (
-			<TypingText
-				text={text}
-				channel={props.channel}
-				typingUserIds={props.typingUserIds}
-			/>
-		),
+		element => isTypingText(element) || isCustomTypingIndicator(element),
+		element => {
+			if (isTypingText(element))
+				return (
+					<TypingText
+						text={element}
+						channel={channel}
+						typingUserIds={typingUserIds}
+					/>
+				)
+
+			const CustomTypingIndicator = wrapComponent(
+				element.type as FC<CustomTypingIndicatorProps>,
+				patchTypingView,
+			)
+
+			// The extra props are only read by the wrapper
+			return (
+				<CustomTypingIndicator
+					key={element.key}
+					{...element.props}
+					channel={channel}
+					typingUserIds={typingUserIds}
+				/>
+			)
+		},
 	)
 }
+
+const isTypingText = (element: ReactElement<any>) =>
+	element.type === Design.Text
+
+/**
+ * Users with a custom typing indicator (Nitro experiment) get the text rendered inside this instead.
+ *
+ * <CustomTypingIndicatorDisplay config={...} username="A" onPress={...}>
+ *   <Stack>
+ *     <CustomTypingIndicatorGlyph config={...} />
+ *     <Text>A is typing...</Text>
+ */
+const isCustomTypingIndicator = (element: ReactElement<any>) =>
+	'config' in element.props &&
+	'username' in element.props &&
+	typeof element.type === 'function'
 
 /**
  * The channel row components are not exported anywhere they can be found reliably,

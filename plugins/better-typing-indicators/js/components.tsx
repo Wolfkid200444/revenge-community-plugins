@@ -5,10 +5,19 @@ import {
 	cloneElement,
 	isValidElement,
 	useCallback,
+	useEffect,
 	useMemo,
+	useRef,
 	useSyncExternalStore,
 } from 'react'
-import { Image, Pressable, StyleSheet, View } from 'react-native'
+import {
+	findNodeHandle,
+	Image,
+	Pressable,
+	StyleSheet,
+	View,
+} from 'react-native'
+import { setChatListExtraSpacing } from './native'
 import {
 	ChannelListAppearance,
 	getAvatarSource,
@@ -21,7 +30,7 @@ import {
 } from './shared'
 import type { DiscordModules } from '@revenge-mod/discord/types'
 import type { ComponentProps, FC, ReactElement, ReactNode } from 'react'
-import type { StyleProp, ViewStyle } from 'react-native'
+import type { LayoutChangeEvent, StyleProp, ViewStyle } from 'react-native'
 import type { BasicChannel, BasicUser, Settings } from './shared'
 
 const { Text } = Design
@@ -51,6 +60,7 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		flexWrap: 'wrap',
 		alignItems: 'center',
+		rowGap: 4,
 	},
 	user: {
 		flexDirection: 'row',
@@ -99,11 +109,12 @@ export function TypingText({ text, channel, typingUserIds }: TypingTextProps) {
 	const { children, style, ...textProps } = text.props
 
 	const users = useMemo(() => getUsers(typingUserIds), [typingUserIds])
+	const { ref, onLayout, onItemLayout } = useChatListSpacing()
 
 	if (settings.avatar === false && settings.name === false) return text
 
 	const renderText = (key: string, content: ReactNode) => (
-		<Text key={key} {...textProps}>
+		<Text key={key} {...textProps} onLayout={onItemLayout}>
 			{content}
 		</Text>
 	)
@@ -132,6 +143,7 @@ export function TypingText({ text, channel, typingUserIds }: TypingTextProps) {
 					user={user}
 					channel={channel}
 					settings={settings}
+					onLayout={onItemLayout}
 					renderName={name =>
 						renderText(
 							'name',
@@ -151,6 +163,7 @@ export function TypingText({ text, channel, typingUserIds }: TypingTextProps) {
 						user={user}
 						channel={channel}
 						settings={{ ...settings, name: false }}
+						onLayout={onItemLayout}
 						renderName={() => null}
 					/>,
 				)
@@ -158,18 +171,84 @@ export function TypingText({ text, channel, typingUserIds }: TypingTextProps) {
 		parts.push(renderText('text', children))
 	}
 
-	return <View style={[styles.container, style]}>{parts}</View>
+	return (
+		// Native looks this up by its tag
+		<View
+			ref={ref}
+			collapsable={false}
+			style={[styles.container, style]}
+			onLayout={onLayout}
+		>
+			{parts}
+		</View>
+	)
+}
+
+function useChatListSpacing() {
+	const ref = useRef<View>(null)
+	const state = useRef({
+		height: 0,
+		lineHeight: 0,
+		extra: 0,
+		tag: null as number | null,
+	})
+
+	const update = useCallback(() => {
+		const s = state.current
+		if (!s.lineHeight) return
+
+		// Less than half a line is just rounding
+		const diff = s.height - s.lineHeight
+		const extra = diff >= s.lineHeight / 2 ? Math.round(diff) : 0
+		if (extra === s.extra) return
+
+		s.tag ??= findNodeHandle(ref.current)
+		if (s.tag == null) return
+
+		s.extra = extra
+		setChatListExtraSpacing(s.tag, extra)
+	}, [])
+
+	useEffect(
+		() => () => {
+			const { extra, tag } = state.current
+			if (extra && tag != null) setChatListExtraSpacing(tag, 0)
+		},
+		[],
+	)
+
+	const onLayout = useCallback(
+		(e: LayoutChangeEvent) => {
+			state.current.height = e.nativeEvent.layout.height
+			update()
+		},
+		[update],
+	)
+
+	// Every item is one line tall
+	const onItemLayout = useCallback(
+		(e: LayoutChangeEvent) => {
+			const s = state.current
+			s.lineHeight = Math.max(s.lineHeight, e.nativeEvent.layout.height)
+			update()
+		},
+		[update],
+	)
+
+	return { ref, onLayout, onItemLayout }
 }
 
 function TypingUser({
 	user,
 	channel,
 	settings,
+	onLayout,
 	renderName,
 }: {
 	user: BasicUser
 	channel: BasicChannel
 	settings: Settings
+	onLayout: (e: LayoutChangeEvent) => void
 	renderName: (name: string | undefined) => ReactNode
 }) {
 	const onPress = useCallback(
@@ -182,7 +261,7 @@ function TypingUser({
 	const showName = settings.name !== false || !showAvatar
 
 	return (
-		<Pressable style={styles.user} onPress={onPress}>
+		<Pressable style={styles.user} onPress={onPress} onLayout={onLayout}>
 			{showAvatar && (
 				<Image
 					source={getAvatarSource(
