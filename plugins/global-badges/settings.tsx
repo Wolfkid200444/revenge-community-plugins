@@ -33,6 +33,12 @@ export default function SettingsComponent({
 						onPress={() => Linking.openURL('https://discord.gg/eTvYv95PCG')}
 					/>
 					<TableSwitchRow
+						label="Show all badges on profiles"
+						subLabel="Display every badge instead of the first six."
+						value={settings.showAll ?? false}
+						onValueChange={showAll => storage.set({ showAll })}
+					/>
+					<TableSwitchRow
 						label="Show custom badges first"
 						value={settings.left ?? false}
 						onValueChange={left => storage.set({ left })}

@@ -13,6 +13,7 @@ import {
 	parseBadges,
 } from './badges'
 import SettingsComponent from './settings'
+import { setupBadgeViewer } from './viewer'
 import type { JsonStorage } from '@revenge-mod/json-storage'
 import type { PluginApi } from '@revenge-mod/plugins/types'
 import type { AnyObject } from '@revenge-mod/utils/types'
@@ -42,9 +43,7 @@ async function fetchBadges(
 		const json = await cacheStorage.get()
 		parseBadges(json)
 		cached = json
-	} catch {
-		// An unreadable or outdated cache must not prevent a fresh request.
-	}
+	} catch {}
 
 	if (netInfo.details?.isConnectionExpensive && !storage.updateOnMetered)
 		return cached ?? { users: {} }
@@ -88,7 +87,9 @@ async function refresh(
 
 export default plugin<{ jsonStorage: Settings }>({
 	jsonStorage: { load: true, default: DefaultSettings },
-	start({ cleanup, jsonStorage, plugin }) {
+	start(api) {
+		const { cleanup, jsonStorage, plugin } = api
+		active = true
 		if (plugin.startedLate) {
 			plugin.requireReload()
 			return
@@ -99,11 +100,14 @@ export default plugin<{ jsonStorage: Settings }>({
 		)
 
 		const store = createBadgeStore()
+		const profileProps = setupBadgeViewer(api, store)
 
 		const syncSettings = () => {
 			const value = jsonStorage.cache
 			store.setSettings({
 				left: value?.left === true,
+				showAll: value?.showAll === true,
+				badgeOrder: value?.badgeOrder ?? {},
 				showModStyle:
 					value?.showModStyle === 'prefix' || value?.showModStyle === 'suffix'
 						? value.showModStyle
@@ -161,6 +165,14 @@ export default plugin<{ jsonStorage: Settings }>({
 		function patchBadgeProps<Args extends [unknown, unknown?, ...unknown[]]>(
 			args: Args,
 		): Args {
+			const component = args[0]
+			const type = isRecord(component) ? component.type : component
+			const name = typeof type === 'function' ? type.name : undefined
+			if (name === 'ProfileBadgeRows' && isRecord(args[1])) {
+				args[1] = profileProps(args[1])
+				return args
+			}
+			if (name !== 'ProfileBadge') return args
 			const props = badgeProps(args[1])
 			if (props) args[1] = props
 			return args
