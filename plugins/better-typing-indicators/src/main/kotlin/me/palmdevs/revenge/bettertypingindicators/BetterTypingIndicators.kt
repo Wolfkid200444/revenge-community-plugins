@@ -11,7 +11,7 @@ val betterTypingIndicators = plugin {
     var spacing: ChatListSpacing? = null
 
     start {
-        spacing = ChatListSpacing(classLoader)
+        spacing = ChatListSpacing(dexFinder)
 
         registerNativeMethod("palmdevs.typing.setExtraSpacing") { args ->
             val tag = (args[0] as Number).toInt()

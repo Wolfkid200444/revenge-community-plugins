@@ -10,7 +10,7 @@ val mentionAvatars = plugin {
     var hooks: IconHooks? = null
 
     start {
-        hooks = IconHooks(classLoader)
+        hooks = IconHooks(dexFinder)
     }
 
     stop {

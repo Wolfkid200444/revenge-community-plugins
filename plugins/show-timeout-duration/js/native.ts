@@ -12,8 +12,13 @@ export function clearTimeoutEnds() {
 	callNativeMethodSync('palmdevs.timeout.clear', [])
 }
 
+export function setTimeoutColors(text: number, icon: number) {
+	callNativeMethodSync('palmdevs.timeout.colors', [text, icon])
+}
+
 declare module '@revenge-mod/modules/native' {
 	interface NativeMethods {
+		'palmdevs.timeout.colors': [[text: number, icon: number], null]
 		'palmdevs.timeout.put': [[json: string], null]
 		'palmdevs.timeout.clear': [[], null]
 	}

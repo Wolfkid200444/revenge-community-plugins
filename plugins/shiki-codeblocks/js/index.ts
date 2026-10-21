@@ -49,8 +49,8 @@ const MemoCapacity = 256
 export default plugin<{ jsonStorage: Settings }>({
 	jsonStorage: { load: true, default: DefaultSettings },
 	start({ cleanup, jsonStorage, plugin }) {
-		// Key to highlight, least recently used first
-		const memo = new Map<string, Highlight>()
+		// Key to highlight (or null if left to Discord), least recently used first
+		const memo = new Map<string, Highlight | null>()
 		const highlight = createHighlighter()
 		let reported = false
 
@@ -114,7 +114,8 @@ export default plugin<{ jsonStorage: Settings }>({
 					memo.set(key, result)
 					if (memo.size > MemoCapacity) memo.delete(memo.keys().next().value!)
 					// Native looks blocks up by the content it gets
-					blocks.push(source === content ? result : { ...result, content })
+					if (result)
+						blocks.push(source === content ? result : { ...result, content })
 				}
 			}
 

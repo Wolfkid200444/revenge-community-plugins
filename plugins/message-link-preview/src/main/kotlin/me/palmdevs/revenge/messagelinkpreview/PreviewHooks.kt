@@ -8,25 +8,24 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
+import io.github.revenge.xposed.api.DexFinder
+import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.WeakHashMap
 
-private const val CHAT = "com.discord.chat"
-private const val CHAT_LIST_VIEW = "$CHAT.presentation.list.ChatListView"
-private const val ACCESSORIES_ADAPTER = "$CHAT.presentation.message.MessageAccessoriesAdapter"
-private const val MESSAGE_PART_HOLDER = "$CHAT.presentation.message.viewholder.MessagePartViewHolder"
+private const val CHAT_LIST_VIEW_MANAGER = "com.discord.chat.presentation.list.ChatListViewManager"
 
 // Must match EmbedIdPrefix in JS
 private const val EMBED_ID_PREFIX = "palmdevs.message-link-preview:"
 
 private const val GAP_DP = 12
 
-internal class PreviewHooks(classLoader: ClassLoader) {
-    private class Bound(val messageId: String, val eventHandler: Any?, val componentProvider: Any?, val pool: Any?)
+internal class PreviewHooks(dexFinder: DexFinder) {
+    private class Bound(val messageId: String, val eventHandler: Any?, val componentProvider: Any?)
 
     private val previews = PreviewStore()
-    private val messageViews = MessageViews(classLoader)
-    private val embeds = EmbedParts(classLoader)
+    private val messageViews = MessageViews(dexFinder)
+    private val embeds = EmbedParts(dexFinder)
 
     @Volatile
     var maxHeightDp = 512
@@ -42,26 +41,31 @@ internal class PreviewHooks(classLoader: ClassLoader) {
     private val bindingAdapter = ThreadLocal<Any?>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val chatListView = classLoader.loadClass(CHAT_LIST_VIEW)
+    private val chatListView = dexFinder.classLoader.loadClass(CHAT_LIST_VIEW_MANAGER).declaredMethods
+        .single { it.name == "setFloatingChatInputEnabled" && !it.isBridge }
+        .parameterTypes[0]
 
-    private val adapterClass = classLoader.loadClass(ACCESSORIES_ADAPTER)
-    private val adapterEventHandler = adapterClass.getDeclaredField("eventHandler").apply { isAccessible = true }
-    private val adapterComponentProvider =
-        adapterClass.getDeclaredField("botComponentProvider").apply { isAccessible = true }
-    private val adapterPool = adapterClass.getDeclaredField("recyclerViewPool").apply { isAccessible = true }
+    private val adapterEventHandler: Field
+    private val adapterComponentProvider: Field
 
     private val unhooks: List<XC_MethodHook.Unhook>
 
     init {
-        val onBindViewHolder = adapterClass.getDeclaredMethod(
-            "onBindViewHolder",
-            classLoader.loadClass(MESSAGE_PART_HOLDER),
-            Int::class.javaPrimitiveType,
-        )
-        // setEmbed-Km7rQmo, not its setEmbed_Km7rQmo$lambda$... lambdas
-        val setEmbed = embeds.embedViewClass.declaredMethods.single {
-            it.name.startsWith("setEmbed-") && !it.name.endsWith("\$default")
+        val onBindViewHolder = dexFinder.findMethod {
+            matcher {
+                paramCount(2)
+                usingEqStrings("reactions", "addNewReactionAccessibilityLabel")
+            }
+        } ?: error("MessageAccessoriesAdapter.onBindViewHolder not found")
+
+        val adapterFieldOf = { type: Class<*> ->
+            onBindViewHolder.declaringClass.declaredFields.single { it.type == type }.apply { isAccessible = true }
         }
+
+        adapterEventHandler = adapterFieldOf(messageViews.eventHandlerClass)
+        adapterComponentProvider = adapterFieldOf(messageViews.componentProviderClass)
+
+        val setEmbed = embeds.setEmbed
 
         unhooks = listOf(
             // Embeds get the chat's event handler from the adapter binding them
@@ -124,10 +128,10 @@ internal class PreviewHooks(classLoader: ClassLoader) {
     }
 
     private fun bind(view: FrameLayout, embed: Any?) {
-        val id = embeds.id(embed)
+        val id = embeds.idWith(embed, EMBED_ID_PREFIX)
         val adapter = bindingAdapter.get()
 
-        if (id == null || !id.startsWith(EMBED_ID_PREFIX) || adapter == null) {
+        if (id == null || adapter == null) {
             // Embed views are reused for other embeds
             if (bound.remove(view) != null) {
                 containers[view]?.visibility = View.GONE
@@ -144,7 +148,6 @@ internal class PreviewHooks(classLoader: ClassLoader) {
             id.removePrefix(EMBED_ID_PREFIX),
             adapterEventHandler.get(adapter),
             adapterComponentProvider.get(adapter),
-            adapterPool.get(adapter),
         )
 
         bound[view] = target
@@ -195,7 +198,7 @@ internal class PreviewHooks(classLoader: ClassLoader) {
 
         // Discord tracks some touches itself, so the container can't stop them all
         val eventHandler = if (interactive) target.eventHandler else null
-        messageViews.bind(messageView, preview.kind, parsed, eventHandler, target.componentProvider, target.pool)
+        messageViews.bind(messageView, preview.kind, parsed, eventHandler, target.componentProvider)
     }
 
     private fun newContainer(view: FrameLayout, bottomSpacePx: Int): PreviewContainer {

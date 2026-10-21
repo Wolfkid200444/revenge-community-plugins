@@ -7,9 +7,10 @@ import android.graphics.fonts.FontFamily
 import android.graphics.fonts.FontStyle
 import android.os.Build
 import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
 import io.github.revenge.Logger
+import io.github.revenge.xposed.api.DexFinder
 import java.io.File
+import java.lang.reflect.Modifier
 import java.util.concurrent.ConcurrentHashMap
 
 private const val FONTS_ASSET_PATH = "fonts/"
@@ -172,33 +173,36 @@ internal class FontOverrides(
  * React Native text style goes through. It runs before RN collapses weight and italic into one of four styles.
  */
 internal fun hookReactFontManager(
-    classLoader: ClassLoader,
+    dexFinder: DexFinder,
     overrides: (name: String) -> FontOverrides?,
     log: Logger,
 ): XC_MethodHook.Unhook? {
-    val manager = classLoader.loadClassOrNull("com.facebook.react.common.assets.ReactFontManager")
-        ?: classLoader.loadClassOrNull("com.facebook.react.views.text.ReactFontManager")
-    val style = classLoader.loadClassOrNull("com.facebook.react.common.assets.ReactFontManager\$TypefaceStyle")
-
-    if (manager == null || style == null) {
-        log.w("ReactFontManager not found, fonts won't apply")
-        return null
-    }
-
     val method = runCatching {
-        manager.getDeclaredMethod("getTypeface", String::class.java, style, AssetManager::class.java)
+        dexFinder.findMethod {
+            matcher {
+                paramTypes(String::class.java.name, null, AssetManager::class.java.name)
+                returnType(Typeface::class.java.name)
+                addUsingString("fontFamilyName")
+                addUsingString(FONTS_ASSET_PATH)
+            }
+        } ?: error("not found")
     }.getOrElse {
-        log.w("ReactFontManager.getTypeface(String, TypefaceStyle, AssetManager) not found, fonts won't apply")
+        log.w("ReactFontManager.getTypeface(String, TypefaceStyle, AssetManager) not found, fonts won't apply: ${it.message}")
         return null
     }
+
+    // TypefaceStyle(weight, italic)
+    val style = method.parameterTypes[1].declaredFields.filterNot { Modifier.isStatic(it.modifiers) }
+    val weightField = style.singleOrNull { it.type == Int::class.javaPrimitiveType }?.apply { isAccessible = true }
+    val italicField = style.singleOrNull { it.type == Boolean::class.javaPrimitiveType }?.apply { isAccessible = true }
 
     return method.hookBefore {
         val name = args[0] as? String ?: return@hookBefore
         val fonts = overrides(name) ?: return@hookBefore
         val typefaceStyle = args[1] ?: return@hookBefore
 
-        val weight = runCatching { XposedHelpers.getIntField(typefaceStyle, "weight") }.getOrDefault(DEFAULT_WEIGHT)
-        val italic = runCatching { XposedHelpers.getBooleanField(typefaceStyle, "italic") }.getOrDefault(false)
+        val weight = weightField?.getInt(typefaceStyle) ?: DEFAULT_WEIGHT
+        val italic = italicField?.getBoolean(typefaceStyle) ?: false
 
         fonts.typeface(name, weight, italic, args[2] as? AssetManager)?.let { result = it }
     }

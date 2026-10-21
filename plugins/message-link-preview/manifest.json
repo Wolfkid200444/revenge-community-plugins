@@ -5,13 +5,13 @@
 	"description": "Preview and interact with messages that you've got linked to.",
 	"author": "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")",
 	"icon": "ChatIcon",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"dependencies": {
 		"revenge.api": {
-			"version": ">=1.1.0 <2"
+			"version": ">=1.2.1 <2"
 		},
 		"discord": {
-			"version": "*"
+			"version": ">=352.2"
 		}
 	},
 	"dist": {

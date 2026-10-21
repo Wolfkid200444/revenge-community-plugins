@@ -1,34 +1,32 @@
 package me.palmdevs.revenge.shikicodeblocks
 
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
+import android.text.style.LineBackgroundSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.UnderlineSpan
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
-import io.github.revenge.Logger
+import io.github.revenge.xposed.api.DexFinder
+import org.luckypray.dexkit.wrap.DexMethod
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.WeakHashMap
 
-private const val TEXT_UTILS = "com.discord.chat.presentation.textutils"
-private const val CODE_STYLE = "$TEXT_UTILS.CodeStyle"
-private const val RENDER_CONTEXT = "$TEXT_UTILS.RenderContext"
-private const val CODE_BLOCK_NODE = "com.discord.chat.bridge.contentnode.CodeBlockContentNode"
-private const val BLOCK_BACKGROUND_SPAN = "com.discord.span.utilities.spannable.BlockBackgroundSpan"
-
 /**
- * Hooks Discord's native code block renderer, `CodeStyle`.
+ * Hooks Discord's native code block renderer, `CodeStyle.renderCodeBlock`.
  *
- * `renderCodeBlock` sets up the block (background, font, padding) around `renderCode`, which appends the highlighted content.
- * `renderCode` is replaced for blocks with a [Highlight], and `renderCodeBlock` then paints its background in the theme's color.
- * Blocks without one keep Discord's highlighting.
+ * Sets up block styling (background, font, padding) around content highlighted with `simpleast` parser.
+ * With [Highlight], parser returns no nodes, appends highlighted content, and paints theme background.
+ * Blocks without [Highlight] keep Discord highlighting.
  *
  * Rows are rendered again whenever they scroll back into view, by then [cache] may have dropped their blocks.
  * So each code block node takes its highlight from [cache] once it is created (right after JS stored it),
@@ -37,71 +35,81 @@ private const val BLOCK_BACKGROUND_SPAN = "com.discord.span.utilities.spannable.
  * Blocks also get a span from [taps], opening them in the viewer where their text can be selected.
  */
 internal fun hookCodeStyle(
-    classLoader: ClassLoader,
+    dexFinder: DexFinder,
     cache: HighlightCache,
     taps: CodeBlockTaps?,
-    log: Logger,
 ): List<XC_MethodHook.Unhook> {
-    val codeStyle = classLoader.loadClass(CODE_STYLE)
-    val node = classLoader.loadClass(CODE_BLOCK_NODE)
-    val getLang = node.getMethod("getLang")
-    val getContent = node.getMethod("getContent")
-    val spoilerIsHidden = classLoader.loadClass(RENDER_CONTEXT).getMethod("spoilerIsHidden")
-    val renderCode = codeStyle.findRenderMethod("renderCode", node)
-    val renderCodeBlock = codeStyle.findRenderMethod("renderCodeBlock", node)
-
-    // Only the background is lost without it, so a missing field is not fatal.
-    val fillPaint = runCatching {
-        classLoader.loadClass(BLOCK_BACKGROUND_SPAN).getDeclaredField("fillPaint").apply { isAccessible = true }
-    }.onFailure { log.w("Code block backgrounds will keep Discord's color", it) }.getOrNull()
+    val node = CodeBlockNode(dexFinder)
+    val renderCodeBlock = dexFinder.findMethod {
+        matcher {
+            modifiers(Modifier.STATIC)
+            paramTypes(null, node.type.name, null)
+        }
+    } ?: error("CodeStyle.renderCodeBlock not found")
+    val palette = DiscordPalette(dexFinder, renderCodeBlock.declaringClass)
+    val spoilerIsHidden = dexFinder.findMethod {
+        matcher {
+            declaredClass(renderCodeBlock.parameterTypes[2].name)
+            paramCount(0)
+            returnType("boolean")
+            addCaller(DexMethod(renderCodeBlock).serialize())
+        }
+    } ?: error("RenderContext.spoilerIsHidden not found")
+    val parse = dexFinder.findMethod {
+        matcher { usingEqStrings("matcher found no matches", "failed to find rule to match source") }
+    } ?: error("Parser.parse not found")
 
     // Nodes are data classes, so equal blocks share an entry. It goes once the node that added it is collected.
     val attached = Collections.synchronizedMap(WeakHashMap<Any, Highlight>())
-    val highlightOf = { target: Any -> cache[getLang.invoke(target) as String, getContent.invoke(target) as String] }
+    val highlightOf = { target: Any -> cache[node.lang(target), node.content(target)] }
 
-    // renderCode is only called by renderCodeBlock, on the same thread, so this hands the highlight over.
+    // Hands block over: renderCodeBlock parses content inline on the same thread.
+    val pending = ThreadLocal<Pending?>()
     val rendered = ThreadLocal<Highlight?>()
 
-    return XposedBridge.hookAllConstructors(node, object : XC_MethodHook() {
+    return XposedBridge.hookAllConstructors(node.type, object : XC_MethodHook() {
         override fun afterHookedMethod(param: MethodHookParam) {
             val target = param.thisObject
             highlightOf(target)?.let { attached[target] = it }
         }
     }).toList() + listOf(
-        renderCode.hook(before = { param ->
-            val rc = param.args[2]
-            if (spoilerIsHidden.invoke(rc) == true) return@hook
+        parse.hook(before = { param ->
+            val block = pending.get() ?: return@hook
+            pending.set(null)
 
-            val target = param.args[1]
-            val highlight = attached[target] ?: highlightOf(target) ?: return@hook
-
-            (param.args[0] as SpannableStringBuilder).appendHighlighted(getContent.invoke(target) as String, highlight)
-            rendered.set(highlight)
-            param.result = null
+            // Block background not set yet. Leaves matching token backgrounds transparent.
+            block.builder.appendHighlighted(block.content, block.highlight, palette.of(block.rc, Color.TRANSPARENT))
+            rendered.set(block.highlight)
+            param.result = ArrayList<Any>()
         }),
         renderCodeBlock.hook(
             before = { param ->
                 rendered.set(null)
-                param.setObjectExtra(EXTRA_START, (param.args[0] as SpannableStringBuilder).length)
+                pending.set(null)
+
+                val builder = param.args[0] as SpannableStringBuilder
+                param.setObjectExtra(EXTRA_START, builder.length)
+                if (spoilerIsHidden.invoke(param.args[2]) == true) return@hook
+
+                val target = param.args[1]
+                val highlight = attached[target] ?: highlightOf(target) ?: return@hook
+                pending.set(Pending(builder, param.args[2], node.content(target), highlight))
             },
             after = { param ->
                 val highlight = rendered.get()
                 rendered.set(null)
+                pending.set(null)
 
                 val builder = param.args[0] as SpannableStringBuilder
                 val start = param.getObjectExtra(EXTRA_START) as Int
-                if (highlight != null && fillPaint != null) builder.paintBlockBackground(start, fillPaint, highlight.bg)
+                val fills = builder.blockFills(start)
+                val colors = palette.of(param.args[2], fills.firstOrNull()?.color ?: Color.TRANSPARENT)
+                if (highlight != null) for (fill in fills) fill.color = colors.resolve(highlight.bg)
 
                 // Tapping a hidden spoiler reveals it instead
-                val rc = param.args[2]
-                if (taps != null && taps.enabled && spoilerIsHidden.invoke(rc) != true) {
+                if (taps != null && taps.enabled && spoilerIsHidden.invoke(param.args[2]) != true) {
                     val target = param.args[1]
-                    val span = taps.span(
-                        getLang.invoke(target) as String,
-                        getContent.invoke(target) as String,
-                        highlight,
-                        rc,
-                    )
+                    val span = taps.span(node.lang(target), node.content(target), highlight, colors)
                     builder.span(span, start, builder.length)
                 }
             },
@@ -109,11 +117,37 @@ internal fun hookCodeStyle(
     )
 }
 
-private const val EXTRA_START = "start"
+private class Pending(val builder: SpannableStringBuilder, val rc: Any, val content: String, val highlight: Highlight)
 
-private fun Class<*>.findRenderMethod(name: String, node: Class<*>): Method =
-    declaredMethods.single { it.name == name && it.parameterTypes.size == 3 && it.parameterTypes[1] == node }
-        .apply { isAccessible = true }
+/** Discord's `CodeBlockContentNode` is a data class, so we toString and to get its field values. */
+private class CodeBlockNode(dexFinder: DexFinder) {
+    val type: Class<*> = dexFinder.findClass {
+        matcher { addUsingString(TO_STRING_PREFIX) }
+    } ?: error("CodeBlockContentNode not found")
+
+    private val strings = type.declaredFields
+        .filter { it.type == String::class.java && !Modifier.isStatic(it.modifiers) }
+        .onEach { it.isAccessible = true }
+
+    @Volatile
+    private var fields: Pair<Field, Field>? = null
+
+    fun lang(node: Any) = fieldsOf(node).first.get(node) as String
+
+    fun content(node: Any) = fieldsOf(node).second.get(node) as String
+
+    private fun fieldsOf(node: Any): Pair<Field, Field> = fields ?: run {
+        val text = node.toString()
+        val lang = strings.first { text.startsWith("$TO_STRING_PREFIX${it.get(node)}, content=") }
+        (lang to strings.single { it != lang }).also { fields = it }
+    }
+
+    private companion object {
+        const val TO_STRING_PREFIX = "CodeBlockContentNode(lang="
+    }
+}
+
+private const val EXTRA_START = "start"
 
 private inline fun Method.hook(
     crossinline before: (XC_MethodHook.MethodHookParam) -> Unit = {},
@@ -123,17 +157,19 @@ private inline fun Method.hook(
     override fun afterHookedMethod(param: MethodHookParam) = after(param)
 })
 
-internal fun SpannableStringBuilder.appendHighlighted(content: String, highlight: Highlight) {
+/** Appends [content] with [highlight], with placeholder colors taken from [palette]. */
+internal fun SpannableStringBuilder.appendHighlighted(content: String, highlight: Highlight, palette: IntArray) {
     val text = highlight.text ?: content
     val start = length
     append(text)
-    setSpan(ForegroundColorSpan(highlight.fg), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    setSpan(ForegroundColorSpan(palette.resolve(highlight.fg)), start, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
 
     val backgrounds = highlight.backgrounds
     for (i in 0 until backgrounds.size - 2 step 3) {
         val from = backgrounds[i]
         val to = backgrounds[i + 1]
-        if (from in 0..<to && to <= text.length) span(BackgroundColorSpan(backgrounds[i + 2]), start + from, start + to)
+        if (from in 0..<to && to <= text.length)
+            span(BackgroundColorSpan(palette.resolve(backgrounds[i + 2])), start + from, start + to)
     }
 
     val spans = highlight.spans
@@ -144,7 +180,7 @@ internal fun SpannableStringBuilder.appendHighlighted(content: String, highlight
 
         val color = spans[i + 2]
         val style = spans[i + 3]
-        if (color != highlight.fg) span(ForegroundColorSpan(color), start + from, start + to)
+        if (color != highlight.fg) span(ForegroundColorSpan(palette.resolve(color)), start + from, start + to)
 
         val typeface = when (style and (FontStyle.BOLD or FontStyle.ITALIC)) {
             FontStyle.BOLD -> Typeface.BOLD
@@ -161,11 +197,17 @@ internal fun SpannableStringBuilder.appendHighlighted(content: String, highlight
 private fun SpannableStringBuilder.span(what: Any, start: Int, end: Int) =
     setSpan(what, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
 
-/** Recolors the block background span that `renderCodeBlock` added from [start] on. */
-private fun SpannableStringBuilder.paintBlockBackground(start: Int, fillPaint: Field, color: Int) {
-    val type = fillPaint.declaringClass
-    for (span in getSpans(start, length, type)) {
-        if (getSpanStart(span) < start) continue
-        (fillPaint.get(span) as Paint).color = color
+private val fillPaints = Collections.synchronizedMap(HashMap<Class<*>, List<Field>>())
+
+/**
+ * Extracts background fill paints applied from [start] onward:
+ * - Scans for [LineBackgroundSpan] instances anchored at or after [start].
+ * - Uses reflection to filter for [Paint.Style.FILL].
+ */
+private fun SpannableStringBuilder.blockFills(start: Int): List<Paint> =
+    getSpans(start, length, LineBackgroundSpan::class.java).filter { getSpanStart(it) >= start }.flatMap { span ->
+        val paints = fillPaints.getOrPut(span.javaClass) {
+            span.javaClass.declaredFields.filter { it.type == Paint::class.java }.onEach { it.isAccessible = true }
+        }
+        paints.map { it.get(span) as Paint }.filter { it.style == Paint.Style.FILL }
     }
-}

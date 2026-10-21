@@ -47,12 +47,12 @@ val themesPlugin = plugin {
         val discordEmoji = DiscordEmoji(appInfo.sourceDir, File(emojiPreviewRoot, "discord"), log)
 
         unhooks = buildList {
-            if (fonts != null) hookReactFontManager(classLoader, fontsFor, log)?.let(::add)
-            if (icons != null) addAll(hookImageSources(classLoader, { icons }, log))
+            if (fonts != null) hookReactFontManager(dexFinder, fontsFor, log)?.let(::add)
+            if (icons != null) addAll(hookImageSources(dexFinder, { icons }, log))
             if (emoji != null) addAll(hookEmojiAssets({ emoji }, log))
         }
 
-        colors = DiscordNativeColors(classLoader, log).apply {
+        colors = DiscordNativeColors(dexFinder, log).apply {
             runCatching { apply(state.colors?.values) }.onFailure { log.e("Failed to apply native colors", it) }
         }
 
@@ -136,7 +136,7 @@ val themesPlugin = plugin {
             previewFonts.set(FontOverrides(fontPreviews.toMap(), log))
 
             synchronized(fontPreviews) {
-                if (fonts == null && previewUnhook == null) previewUnhook = hookReactFontManager(classLoader, fontsFor, log)
+                if (fonts == null && previewUnhook == null) previewUnhook = hookReactFontManager(dexFinder, fontsFor, log)
             }
             null
         }

@@ -683,7 +683,7 @@ export function activeBackgroundOf(state: ThemesStoreState) {
 				uri: imageUriOf(path, state.selected.colors?.plugin),
 				opacity: settings?.opacity ?? base?.opacity,
 				blur: settings?.blur ?? base?.blur ?? 0,
-				dimming: settings?.dimming ?? base?.dimming ?? 1,
+				dimming: settings?.dimming ?? base?.dimming ?? 0.7,
 			}
 		: undefined
 

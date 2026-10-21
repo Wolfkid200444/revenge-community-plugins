@@ -59,9 +59,10 @@ class ThemesHelpersTest {
     }
 
     @Test
-    fun `semantic names map to native getters`() {
-        assertEquals("getBackgroundBaseLow", semanticColorGetterName("BACKGROUND_BASE_LOW"))
-        assertEquals("getTextNormal", semanticColorGetterName("TEXT_NORMAL"))
+    fun `semantic names map to native color resources`() {
+        assertEquals("background_code_ash", semanticColorResourceName(ThemeBase.DARK, "BACKGROUND_CODE"))
+        assertEquals("border_subtle_dark", semanticColorResourceName(ThemeBase.DARKER, "BORDER_SUBTLE"))
+        assertEquals("chat_input_background_onyx", semanticColorResourceName(ThemeBase.MIDNIGHT, "CHAT_INPUT_BACKGROUND"))
     }
 
     @Test

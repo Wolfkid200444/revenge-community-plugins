@@ -8,7 +8,11 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
 import android.widget.TextView
-import java.lang.reflect.Method
+import io.github.revenge.xposed.api.DexFinder
+import java.lang.reflect.Modifier
+
+private const val CHAT_LIST_VIEW_MANAGER = "com.discord.chat.presentation.list.ChatListViewManager"
+private const val DRAWEE_VIEW = "com.facebook.drawee.view.SimpleDraweeView"
 
 private const val ICON_SIZE_DP = 16f
 private const val ICON_MARGIN_END_DP = 4f
@@ -66,9 +70,11 @@ internal class TimeoutLine(
         this.end = end?.takeIf { showsAuthor }
 
         // The theme may have changed since the last message
-        style.applyColors(icon, text)
+        recolor()
         update()
     }
+
+    fun recolor() = style.applyColors(icon, text)
 
     /** Takes this out of [parent]. */
     fun remove(parent: RelativeLayout) {
@@ -128,39 +134,62 @@ internal class TimeoutLine(
         super.onDetachedFromWindow()
     }
 
-    class Style(classLoader: ClassLoader) {
-        val chatListView: Class<*> = classLoader.loadClass("com.discord.chat.presentation.list.ChatListView")
+    /** Discord's critical feedback colors in its current theme, as ARGB. */
+    class Colors(val text: Int, val icon: Int)
 
-        private val draweeConstructor = classLoader.loadClass("com.facebook.drawee.view.SimpleDraweeView")
-            .getConstructor(Context::class.java)
-        private val drawee = classLoader.loadClass("com.facebook.drawee.view.SimpleDraweeView")
+    class Style(dexFinder: DexFinder) {
+        val chatListView: Class<*> = dexFinder.classLoader.loadClass(CHAT_LIST_VIEW_MANAGER).declaredMethods
+            .single { it.name == "setFloatingChatInputEnabled" && !it.isBridge }
+            .parameterTypes[0]
 
-        private val getTheme = classLoader.loadClass("com.discord.theme.ThemeManagerKt").getMethod("getTheme")
-        private val themeClass = classLoader.loadClass("com.discord.theme.DiscordThemeObject")
-        private val textCritical = themeClass.getMethod("getTextFeedbackCritical")
-        private val iconCritical = themeClass.getMethod("getIconFeedbackCritical")
+        private val draweeConstructor = dexFinder.classLoader.loadClass(DRAWEE_VIEW).getConstructor(Context::class.java)
 
-        private val setTintColor = classLoader.loadClass("com.discord.theme.utils.ColorUtilsKt")
-            .getMethod("setTintColor", drawee, Int::class.javaObjectType)
-        private val setReactAsset: Method
-        private val clockWarningIcon: Any
+        /** Set by JS, as R8 left Discord's theme objects without names to read them by. */
+        @Volatile
+        var colors: Colors? = null
 
-        private val setDiscordFont: Method
-        private val primaryMedium: Any
-        private val setTextSizeSp = classLoader.loadClass("com.discord.SetTextSizeSpKt")
-            .getMethod("setTextSizeSp", TextView::class.java, Float::class.javaPrimitiveType, Float::class.javaPrimitiveType)
+        private val setTintColor = dexFinder.findMethod {
+            matcher {
+                modifiers(Modifier.STATIC)
+                paramTypes(DRAWEE_VIEW, "java.lang.Integer")
+                returnType("void")
+            }
+        } ?: error("ColorUtils.setTintColor not found")
 
-        init {
-            val reactAsset = classLoader.loadClass("com.discord.react_asset_fetcher.ReactAsset")
-            setReactAsset = classLoader.loadClass("com.discord.react_asset_fetcher.ReactAssetUtilsKt")
-                .getMethod("setReactAsset", drawee, reactAsset)
-            clockWarningIcon = reactAsset.getField("ClockWarningIcon").get(null)!!
+        private val reactAsset = dexFinder.findClass {
+            matcher {
+                superClass("java.lang.Enum")
+                usingEqStrings("ClockWarningIcon")
+            }
+        } ?: error("ReactAsset not found")
+        private val setReactAsset = dexFinder.findMethod {
+            matcher {
+                modifiers(Modifier.STATIC)
+                paramTypes(DRAWEE_VIEW, reactAsset.name)
+            }
+        } ?: error("ReactAssetUtils.setReactAsset not found")
+        private val clockWarningIcon = reactAsset.enumConstant("ClockWarningIcon")
 
-            val discordFont = classLoader.loadClass("com.discord.fonts.DiscordFont")
-            setDiscordFont = classLoader.loadClass("com.discord.fonts.DiscordFontUtilsKt")
-                .getMethod("setDiscordFont", TextView::class.java, discordFont)
-            primaryMedium = discordFont.getField("PrimaryMedium").get(null)!!
-        }
+        private val discordFont = dexFinder.findClass {
+            matcher {
+                superClass("java.lang.Enum")
+                usingEqStrings("PrimaryMedium")
+            }
+        } ?: error("DiscordFont not found")
+        private val setDiscordFont = dexFinder.findMethod {
+            matcher {
+                modifiers(Modifier.STATIC)
+                paramTypes("android.widget.TextView", discordFont.name)
+            }
+        } ?: error("DiscordFontUtils.setDiscordFont not found")
+        private val primaryMedium = discordFont.enumConstant("PrimaryMedium")
+        private val setTextSizeSp = dexFinder.findMethod {
+            matcher {
+                modifiers(Modifier.STATIC)
+                paramTypes("android.widget.TextView", "float", "float")
+                returnType("void")
+            }
+        } ?: error("setTextSizeSp not found")
 
         fun newIcon(context: Context) = (draweeConstructor.newInstance(context) as ImageView).also {
             setReactAsset.invoke(null, it, clockWarningIcon)
@@ -172,12 +201,15 @@ internal class TimeoutLine(
         }
 
         fun applyColors(icon: ImageView, text: TextView) {
-            val theme = getTheme.invoke(null)
-            text.setTextColor(textCritical.invoke(theme) as Int)
-            setTintColor.invoke(null, icon, iconCritical.invoke(theme) as Int)
+            val colors = colors ?: return
+            text.setTextColor(colors.text)
+            setTintColor.invoke(null, icon, colors.icon)
         }
     }
 }
+
+private fun Class<*>.enumConstant(name: String): Any =
+    enumConstants!!.first { (it as Enum<*>).name == name }
 
 private fun View.measureAndLayout() {
     measure(

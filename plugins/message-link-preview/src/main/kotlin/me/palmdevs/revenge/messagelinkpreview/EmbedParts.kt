@@ -4,34 +4,50 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-
-private const val CHAT = "com.discord.chat"
-private const val EMBED_VIEW = "$CHAT.presentation.message.view.EmbedView"
-private const val EMBED_VIEW_BINDING = "$CHAT.databinding.EmbedViewBinding"
-private const val EMBED = "$CHAT.bridge.embed.Embed"
+import io.github.revenge.xposed.api.DexFinder
+import java.lang.reflect.Modifier
+import java.util.WeakHashMap
 
 // See res/layout/embed_view.xml
-internal class EmbedParts(classLoader: ClassLoader) {
-    val embedViewClass: Class<*> = classLoader.loadClass(EMBED_VIEW)
+internal class EmbedParts(dexFinder: DexFinder) {
+    val setEmbed = dexFinder.findMethod {
+        matcher { usingEqStrings("margins", "embed") }
+    } ?: error("EmbedView.setEmbed not found")
 
-    private val binding = embedViewClass.getDeclaredField("binding").apply { isAccessible = true }
-    private val bindingClass = classLoader.loadClass(EMBED_VIEW_BINDING)
-    private val bindingDescription = bindingClass.getField("description")
-    private val bindingFieldsTopWrap = bindingClass.getField("fieldsTopWrap")
-    private val bindingFooterContainer = bindingClass.getField("footerContainer")
-    private val bindingFooterText = bindingClass.getField("footerText")
-    private val bindingSpacer = bindingClass.getField("spacer")
-    private val embedId = classLoader.loadClass(EMBED).getDeclaredField("id").apply { isAccessible = true }
+    private val embedStrings = setEmbed.parameterTypes[1].declaredFields
+        .filter { it.type == String::class.java && !Modifier.isStatic(it.modifiers) }
+        .onEach { it.isAccessible = true }
 
-    fun id(embed: Any?) = embedId.get(embed) as String?
+    // Main thread only
+    private val parts = WeakHashMap<FrameLayout, Parts>()
 
-    fun description(view: FrameLayout) = bindingDescription.get(binding.get(view)) as TextView
+    private class Parts(view: FrameLayout) {
+        val description = view.byId<TextView>("description")
+        val fieldsTopWrap = view.byId<LinearLayout>("fields_top_wrap")
+        val footer = view.byId<View>("footer_container")
+        val footerText = view.byId<TextView>("footer_text")
+        val spacer = view.byId<View>("spacer")
+    }
 
-    fun fieldsTopWrap(view: FrameLayout) = bindingFieldsTopWrap.get(binding.get(view)) as LinearLayout
+    /** The embed's ID if it starts with [prefix]. Its other strings never do, and R8 renamed the field. */
+    fun idWith(embed: Any?, prefix: String): String? = embed?.let {
+        embedStrings.firstNotNullOfOrNull { field -> (field.get(it) as String?)?.takeIf { id -> id.startsWith(prefix) } }
+    }
 
-    fun footer(view: FrameLayout) = bindingFooterContainer.get(binding.get(view)) as View
+    private fun parts(view: FrameLayout) = parts.getOrPut(view) { Parts(view) }
 
-    fun footerText(view: FrameLayout) = bindingFooterText.get(binding.get(view)) as TextView
+    fun description(view: FrameLayout) = parts(view).description
 
-    fun spacer(view: FrameLayout) = bindingSpacer.get(binding.get(view)) as View
+    fun fieldsTopWrap(view: FrameLayout) = parts(view).fieldsTopWrap
+
+    fun footer(view: FrameLayout) = parts(view).footer
+
+    fun footerText(view: FrameLayout) = parts(view).footerText
+
+    fun spacer(view: FrameLayout) = parts(view).spacer
 }
+
+@Suppress("DiscouragedApi")
+private fun <T : View> View.byId(name: String): T =
+    findViewById(resources.getIdentifier(name, "id", context.packageName))
+        ?: error("No $name in ${javaClass.name}")

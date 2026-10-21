@@ -5,7 +5,12 @@ import { instead } from '@revenge-mod/patcher'
 import { noop } from '@revenge-mod/utils/callback'
 import { useSyncExternalStore } from 'react'
 import { Image, StyleSheet, useWindowDimensions, View } from 'react-native'
-import { ownGradientSettings, resolveSemanticColor } from './colors'
+import {
+	ownGradientSettings,
+	ownGradients,
+	resolveSemanticColor,
+	SurfaceColor,
+} from './colors'
 import { activeBackgroundOf, themesStore } from './store'
 import type { PreInitPluginApi } from '@revenge-mod/plugins/types'
 import type { FunctionComponent } from 'react'
@@ -27,6 +32,14 @@ interface CustomThemeDisplaySettings {
 	customTheme: CustomThemeSettings
 }
 
+// ../discord_app/modules/client_themes/native/ClientThemesUtils.tsx
+interface GradientMetadataModule {
+	getGradientThemeMetadata(
+		theme: ThemeBase,
+		gradient?: { customThemeSettings?: object } | null,
+	): object | null
+}
+
 // ../discord_app/modules/client_themes/native/useCustomThemeDisplaySettings.tsx
 interface CustomThemeDisplaySettingsModule {
 	useCustomThemeDisplaySettings(
@@ -46,7 +59,7 @@ interface ThemedGradientProps {
 	wide?: boolean
 	/** Window height, past the container. */
 	tall?: boolean
-	/** Blends the gradient toward the base, behind surfaces without their own dimming overlay. */
+	/** Matches the gradient under a dimmed surface, for layers drawn above one (channel list, home drawer mask). */
 	mix?: boolean
 	style?: StyleProp<ViewStyle>
 	/** Specific gradient to draw, such as a theme picker swatch. */
@@ -69,18 +82,12 @@ interface ThemedGradientModule {
 /** How much the gradient tints Discord's surfaces, from 0 to 100. */
 const BaseMix = 100
 
-/** Theme's main background, which Discord's surfaces should match. */
-const SurfaceColor = 'BACKGROUND_BASE_LOWER'
-
 // ../discord_app/modules/client_themes/native/ClientThemesUtils.tsx: surfaces mix the gradient at
 // 0.12 + 0.2 * baseMix (0.3 in light) over black (white in light)
 const GradientWeight = {
 	dark: 0.12 + 0.2 * (BaseMix / 100),
 	light: 0.3 + 0.2 * (BaseMix / 100),
 }
-
-// ThemedGradient.tsx: mixed layers keep this much of the gradient color over black (white in light)
-const MixWeight = { dark: 0.3, light: 0.2 }
 
 let displaySettings:
 	| {
@@ -106,6 +113,27 @@ export function patchBackgrounds(
 		: () => useSyncExternalStore(themesStore.subscribe, activeBackground)
 
 	cleanup(
+		getModules(
+			withProps<GradientMetadataModule>('getGradientThemeMetadata'),
+			module => {
+				// Semantic color contexts get the metadata, without customThemeSettings
+				cleanup(
+					instead(
+						module,
+						'getGradientThemeMetadata',
+						function (args, original) {
+							const result = Reflect.apply(original, this, args)
+							const settings = args[1]?.customThemeSettings
+							const dimming = settings && ownGradientSettings.get(settings)
+							if (result && dimming !== undefined)
+								ownGradients.set(result, dimming)
+							return result
+						},
+					),
+				)
+			},
+			{ cached: true },
+		),
 		getModules(
 			withProps<CustomThemeDisplaySettingsModule>(
 				'useCustomThemeDisplaySettings',
@@ -141,13 +169,9 @@ export function patchBackgrounds(
 						if (!background || props.gradientOverride != null)
 							return <Original {...props} />
 
-						// Mirrors Discord gradient rendering while overlays handle dimming
+						// Mixed layers look like the image under a dimmed surface, which is the surface color at dimming over the image
 						const light = theme === 'light'
-						const weight = props.mix
-							? 1 -
-								(1 - (light ? MixWeight.light : MixWeight.dark)) *
-									background.dimming
-							: 1
+						const weight = props.mix ? 1 - background.dimming : 1
 
 						return (
 							<View
@@ -157,7 +181,9 @@ export function patchBackgrounds(
 									props.wide && { width },
 									props.tall && { height },
 									{
-										backgroundColor: light ? '#ffffff' : '#000000',
+										backgroundColor:
+											resolveSemanticColor(theme, SurfaceColor) ??
+											(light ? '#ffffff' : '#000000'),
 										overflow: 'hidden',
 									},
 								]}
@@ -247,7 +273,7 @@ function backgroundDisplaySettings() {
 		gradientAngle: 0,
 		baseMix: BaseMix,
 	}
-	ownGradientSettings.add(customTheme)
+	ownGradientSettings.set(customTheme, background.dimming)
 
 	displaySettings = {
 		background,

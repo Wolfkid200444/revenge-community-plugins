@@ -22,96 +22,98 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
+import io.github.revenge.xposed.api.DexFinder
 import java.lang.reflect.Proxy
+import java.util.Collections
+import java.util.WeakHashMap
 
-private const val NESTED_TOUCH = "com.discord.react_gesture_handler.nested_touch"
-private const val NESTED_CLICKABLE_SPAN = "$NESTED_TOUCH.NestedClickableSpan"
-private const val DISCORD_FONT = "com.discord.fonts.DiscordFont"
-private const val DISCORD_FONT_SPAN = "com.discord.chat.presentation.textutils.DiscordFontSpan"
+/**
+ * Discord's `ClickableSpan` behavior:
+ * - Yields touch priority to nested tappable targets.
+ * - Inherits the standard three-state colors, underline, and row-level long press.
+ * - Expands tap hitboxes past line breaks to cover the full block width.
+ */
+private const val CLICKABLE_SPAN_DEFAULTS = 1 or 2 or 4 or 8 or 32 or 64
 
 /**
  * Makes spans that open a code block in [showCodeViewer] when tapped.
  *
- * Message text uses Discord's own touch handling, which only taps spans implementing `NestedClickableSpan`.
- * The interface lives in Discord's class loader, so the spans are proxies of it. They aren't `CharacterStyle`s,
- * so the block keeps its look.
+ * Message text uses Discord touch handling, tapping only Discord `ClickableSpan` instances.
+ * Skips link recoloring for these spans to preserve block styling.
  */
-internal class CodeBlockTaps(classLoader: ClassLoader, private val open: (CodeBlock) -> Unit) {
+internal class CodeBlockTaps(dexFinder: DexFinder, private val open: (CodeBlock) -> Unit) {
     /** Set by JS from the plugin's settings. Checked on taps too, so it applies to blocks already rendered. */
     @Volatile var enabled = true
 
-    private val type = classLoader.loadClass(NESTED_CLICKABLE_SPAN)
-    // The message row's long press (its actions) is registered on it with `setOnLongClickListenerNested`
-    private val getNestedLongClickListener = classLoader.loadClass("$NESTED_TOUCH.NestedScrollOnTouchUtilsKt")
-        .getMethod("getNestedLongClickListener", View::class.java)
-    // The lowest priority, so anything else tappable in a block wins
-    private val priority = classLoader.loadClass("$NESTED_CLICKABLE_SPAN\$TouchPriority").enumConstants!!.first()
+    private val clickableSpan = dexFinder.findClass {
+        matcher {
+            superClass("android.text.style.ClickableSpan")
+            addUsingString("ClickableSpan(touchPriority=")
+        }
+    } ?: error("ClickableSpan not found")
+    private val constructor = clickableSpan.declaredConstructors.single()
+    // Discord bundles Kotlin, so Function1 type differs
+    private val function1 = constructor.parameterTypes[5]
 
-    private val getTheme = classLoader.loadClass("com.discord.chat.presentation.textutils.RenderContext")
-        .getMethod("getTheme")
-    private val theme = classLoader.loadClass("com.discord.theme.DiscordThemeObject")
-    private val getTextCode = theme.getMethod("getTextCode")
-    private val getBackgroundCode = theme.getMethod("getBackgroundCode")
+    private val spans = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap<Any, Boolean>()))
 
-    /** A span for a block of [lang] and [content], rendered with [rc] (a `RenderContext`). */
-    fun span(lang: String, content: String, highlight: Highlight?, rc: Any): Any {
-        val theme = getTheme.invoke(rc)
-        val block = CodeBlock(
-            lang,
-            content,
-            highlight,
-            fg = getTextCode.invoke(theme) as Int,
-            bg = getBackgroundCode.invoke(theme) as Int,
-        )
+    val unhook: XC_MethodHook.Unhook = XposedBridge.hookMethod(
+        clickableSpan.getMethod("updateDrawState", android.text.TextPaint::class.java),
+        object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (param.thisObject in spans) param.result = null
+            }
+        },
+    )
 
-        return Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { proxy, method, args ->
+    fun span(lang: String, content: String, highlight: Highlight?, palette: IntArray): Any {
+        val block = CodeBlock(lang, content, highlight, palette)
+        val onClick = Proxy.newProxyInstance(function1.classLoader, arrayOf(function1)) { proxy, method, args ->
             when (method.name) {
-                "onClick" -> if (enabled) open(block)
-                "onLongClick" -> handOverLongPress(args!![0] as View)
-                "getTouchPriority" -> priority
-                // Taps past the end of a line count too, so the whole block can be tapped
-                "getExpandsTouchTargetToLineBounds" -> true
+                "invoke" -> {
+                    if (enabled) open(block)
+                    null
+                }
                 "equals" -> proxy === args?.get(0)
                 "hashCode" -> System.identityHashCode(proxy)
-                "toString" -> "CodeBlockTapSpan"
-                else -> null
+                else -> "CodeBlockTap"
             }
         }
-    }
 
-    /**
-     * Long presses go to the message row instead, as for the rest of the message.
-     * Always handled, so Discord doesn't turn it into a tap that opens the viewer.
-     */
-    private fun handOverLongPress(view: View): Boolean {
-        var parent = view.parent
-        while (parent is View) {
-            val listener = getNestedLongClickListener.invoke(null, parent) as View.OnLongClickListener?
-            if (listener != null) {
-                listener.onLongClick(parent)
-                break
-            }
-            parent = parent.parent
-        }
-        return true
+        return constructor.newInstance(null, null, null, null, null, onClick, CLICKABLE_SPAN_DEFAULTS)
+            .also { spans += it }
     }
 }
 
 /** Makes spans of Discord's code font, or returns `null` if this Discord version has none. */
-internal fun codeFontOf(classLoader: ClassLoader): ((Context) -> Any)? = runCatching {
-    val font = classLoader.loadClass(DISCORD_FONT)
-    val codeNormal = font.getField("CodeNormal").get(null)
-    val span = classLoader.loadClass(DISCORD_FONT_SPAN).getConstructor(Context::class.java, font)
+internal fun codeFontOf(dexFinder: DexFinder): ((Context) -> Any)? = runCatching {
+    val font = dexFinder.findClass {
+        matcher {
+            superClass("java.lang.Enum")
+            usingEqStrings("PrimaryMedium", "CodeNormal")
+        }
+    } ?: return null
+    val codeNormal = font.enumConstants!!.first { (it as Enum<*>).name == "CodeNormal" }
+    val span = dexFinder.findClass {
+        matcher {
+            superClass("android.text.style.MetricAffectingSpan")
+            addMethod {
+                name("<init>")
+                paramTypes("android.content.Context", font.name)
+            }
+        }
+    }?.getConstructor(Context::class.java, font) ?: return null
     return { context: Context -> span.newInstance(context, codeNormal) }
 }.getOrNull()
 
-/** A code block as the viewer shows it. Colors are Discord's when it has no [highlight]. */
+/** A code block as the viewer shows it. Colors are Discord's ([palette]) when it has no [highlight]. */
 internal class CodeBlock(
     val lang: String,
     val content: String,
     val highlight: Highlight?,
-    val fg: Int,
-    val bg: Int,
+    val palette: IntArray,
 )
 
 /**
@@ -124,12 +126,14 @@ internal fun showCodeViewer(activity: Activity, block: CodeBlock, codeFont: ((Co
     val dp = activity.resources.displayMetrics.density
     fun px(value: Int) = (value * dp).toInt()
 
-    val fg = block.highlight?.fg ?: block.fg
-    val bg = block.highlight?.bg ?: block.bg
+    val palette = block.palette
+    val fg = palette.resolve(block.highlight?.fg ?: palette[TEXT_CODE])
+    val bg = palette.resolve(block.highlight?.bg ?: palette[BACKGROUND_CODE])
     val muted = withAlpha(fg, 0x99)
 
     val highlighted = SpannableStringBuilder().apply {
-        if (block.highlight != null) appendHighlighted(block.content, block.highlight) else append(block.content)
+        if (block.highlight != null) appendHighlighted(block.content, block.highlight, palette)
+        else append(block.content)
         codeFont?.let { setSpan(it(activity), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
     }
 

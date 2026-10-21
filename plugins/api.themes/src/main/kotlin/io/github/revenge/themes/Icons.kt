@@ -3,9 +3,12 @@ package io.github.revenge.themes
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import de.robv.android.xposed.XC_MethodHook
 import io.github.revenge.Logger
+import io.github.revenge.xposed.api.DexFinder
+import org.luckypray.dexkit.wrap.DexMethod
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -57,38 +60,61 @@ internal class IconOverrides(drawables: Map<String, String>) {
 }
 
 /**
- * Hooks React Native's image source resolution (`ImageSource.getUri`) and
+ * Hooks React Native's image source resolution (`ImageSource`, which resolves its URI on construction) and
  * drawable lookup (`ResourceDrawableIdHelper.getResourceDrawable`).
  */
-internal fun hookImageSources(classLoader: ClassLoader, overrides: () -> IconOverrides?, log: Logger): List<XC_MethodHook.Unhook> {
+internal fun hookImageSources(dexFinder: DexFinder, overrides: () -> IconOverrides?, log: Logger): List<XC_MethodHook.Unhook> {
     val unhooks = mutableListOf<XC_MethodHook.Unhook>()
 
-    classLoader.loadClassOrNull("com.facebook.react.views.imagehelper.ImageSource")?.let { clazz ->
-        runCatching {
-            val getSource = clazz.getDeclaredMethod("getSource")
-            unhooks += clazz.getDeclaredMethod("getUri").hookAfter {
-                val icons = overrides() ?: return@hookAfter
-                val source = getSource.invoke(thisObject) as? String ?: return@hookAfter
-                icons.fileFor(source)?.let { result = Uri.fromFile(it) }
+    val getResourceDrawable = runCatching {
+        dexFinder.findMethod {
+            matcher {
+                paramTypes(Context::class.java.name, String::class.java.name)
+                returnType(Drawable::class.java.name)
+                addInvoke($$"Landroid/content/res/Resources;->getDrawable(ILandroid/content/res/Resources$Theme;)Landroid/graphics/drawable/Drawable;")
             }
-        }.onFailure { log.w("ImageSource.getUri not hooked: ${it.message}") }
-    } ?: log.w("ImageSource not found, native icon overrides won't apply")
+        } ?: error("not found")
+    }.onFailure { log.w("ResourceDrawableIdHelper.getResourceDrawable not found, native icon overrides won't apply: ${it.message}") }
+        .getOrNull() ?: return unhooks
 
-    classLoader.loadClassOrNull("com.facebook.react.views.imagehelper.ResourceDrawableIdHelper")?.let { clazz ->
-        runCatching {
-            val method = clazz.declaredMethods.first {
-                it.name == "getResourceDrawable" &&
-                        it.parameterTypes.contentEquals(arrayOf(Context::class.java, String::class.java))
-            }
-            unhooks += method.hookBefore {
-                val icons = overrides() ?: return@hookBefore
-                val context = args[0] as? Context ?: return@hookBefore
-                val name = args[1] as? String ?: return@hookBefore
-                val file = icons.fileFor(name) ?: return@hookBefore
-                BitmapFactory.decodeFile(file.absolutePath)?.let { result = BitmapDrawable(context.resources, it) }
-            }
-        }.onFailure { log.w("ResourceDrawableIdHelper.getResourceDrawable not hooked: ${it.message}") }
+    unhooks += getResourceDrawable.hookBefore {
+        val icons = overrides() ?: return@hookBefore
+        val context = args[0] as? Context ?: return@hookBefore
+        val name = args[1] as? String ?: return@hookBefore
+        val file = icons.fileFor(name) ?: return@hookBefore
+        BitmapFactory.decodeFile(file.absolutePath)?.let { result = BitmapDrawable(context.resources, it) }
     }
+
+    runCatching {
+        val getResourceDrawableUri = dexFinder.findMethod {
+            matcher {
+                declaredClass(getResourceDrawable.declaringClass.name)
+                paramTypes(Context::class.java.name, String::class.java.name)
+                returnType(Uri::class.java.name)
+            }
+        } ?: error("ResourceDrawableIdHelper.getResourceDrawableUri not found")
+
+        val imageSource = dexFinder.findClass {
+            matcher {
+                addField { type(Uri::class.java.name) }
+                addMethod {
+                    name("<init>")
+                    addInvoke(DexMethod(getResourceDrawableUri).serialize())
+                }
+            }
+        } ?: error("ImageSource not found")
+
+        val source = imageSource.declaredFields.single { it.type == String::class.java }.apply { isAccessible = true }
+        val uri = imageSource.declaredFields.single { it.type == Uri::class.java }.apply { isAccessible = true }
+
+        // The others delegate to it
+        unhooks += imageSource.declaredConstructors.maxBy { it.parameterCount }.hookAfter {
+            val icons = overrides() ?: return@hookAfter
+            val name = source.get(thisObject) as? String ?: return@hookAfter
+            icons.fileFor(name)?.let { uri.set(thisObject, Uri.fromFile(it)) }
+        }
+    }.onFailure { log.w("ImageSource not hooked: ${it.message}") }
 
     return unhooks
 }
+

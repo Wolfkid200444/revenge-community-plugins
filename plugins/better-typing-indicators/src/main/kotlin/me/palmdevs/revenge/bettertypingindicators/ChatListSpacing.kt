@@ -5,27 +5,59 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
+import io.github.revenge.xposed.api.DexFinder
+import org.luckypray.dexkit.wrap.DexMethod
 import java.lang.ref.WeakReference
 
-private const val CHAT_LIST_VIEW = "com.discord.chat.presentation.list.ChatListView"
-private const val SPACING_DECORATION = "com.discord.recycler_view.decorations.VerticalSpacingItemDecoration"
+private const val CHAT_LIST_VIEW_MANAGER = "com.discord.chat.presentation.list.ChatListViewManager"
+private const val RECYCLER_VIEW = "androidx.recyclerview.widget.RecyclerView"
 
 private const val MAX_ANCESTORS = 30
 private const val MAX_ATTEMPTS = 10
 private const val RETRY_DELAY_MS = 16L
 
 /** The space after the last message only fits a one line typing indicator. */
-internal class ChatListSpacing(classLoader: ClassLoader) {
-    private val chatListView = classLoader.loadClass(CHAT_LIST_VIEW)
-    private val decorationField = chatListView.getDeclaredField("verticalSpacingItemDecoration").apply { isAccessible = true }
-    private val floatingField = chatListView.getDeclaredField("floatingTreatmentEnabled").apply { isAccessible = true }
-    private val floatingSpacing = chatListView.getDeclaredField("FLOATING_END_ITEM_SPACING_PX").apply { isAccessible = true }.getInt(null)
-    private val baseSpacing = chatListView.getDeclaredField("BASE_END_ITEM_SPACING_PX").apply { isAccessible = true }.getInt(null)
-    private val invalidateItemDecorations = chatListView.getMethod("invalidateItemDecorations")
+internal class ChatListSpacing(dexFinder: DexFinder) {
+    private val recyclerView = dexFinder.classLoader.loadClass(RECYCLER_VIEW)
+    private val chatListView = dexFinder.classLoader.loadClass(CHAT_LIST_VIEW_MANAGER).declaredMethods
+        .single { it.name == "setFloatingChatInputEnabled" && !it.isBridge }
+        .parameterTypes[0]
 
-    private val decoration = classLoader.loadClass(SPACING_DECORATION)
-    private val getEndSpacing = decoration.getMethod("getEndItemSpacingPx")
-    private val setEndSpacing = decoration.getMethod("setEndItemSpacingPx", Int::class.javaPrimitiveType)
+    private val setFloating = chatListView.getMethod("setFloatingChatInputEnabled", Boolean::class.javaPrimitiveType)
+    private val setInverted = chatListView.getMethod("setInverted", Boolean::class.javaPrimitiveType)
+
+    private val decorationField = dexFinder.findField {
+        matcher {
+            declaredClass(chatListView.name)
+            addReadMethod(DexMethod(setFloating).serialize())
+            addReadMethod(DexMethod(setInverted).serialize())
+        }
+    } ?: error("ChatListView.verticalSpacingItemDecoration not found")
+
+    private val floatingField = dexFinder.findField {
+        matcher {
+            declaredClass(chatListView.name)
+            type(Boolean::class.javaPrimitiveType!!)
+            addWriteMethod(DexMethod(setFloating).serialize())
+        }
+    } ?: error("ChatListView.floatingTreatmentEnabled not found")
+
+    private val endSpacingField = dexFinder.findField {
+        matcher {
+            declaredClass(decorationField.type.name)
+            type(Int::class.javaPrimitiveType!!)
+            addWriteMethod(DexMethod(setFloating).serialize())
+        }
+    } ?: error("VerticalSpacingItemDecoration.endItemSpacingPx not found")
+
+    private val markItemDecorInsetsDirty = dexFinder.findMethod {
+        matcher {
+            declaredClass(RECYCLER_VIEW)
+            paramCount(0)
+            addCaller(DexMethod(setFloating).serialize())
+            addInvoke($$"Landroid/view/View;->getLayoutParams()Landroid/view/ViewGroup$LayoutParams;")
+        }
+    } ?: error("RecyclerView.markItemDecorInsetsDirty not found")
 
     // Main thread only
     private val lists = HashMap<Int, WeakReference<View>>()
@@ -74,18 +106,25 @@ internal class ChatListSpacing(classLoader: ClassLoader) {
 
     private fun apply(list: View, extraPx: Int) {
         val decoration = decorationField.get(list)
-        val base = if (floatingField.getBoolean(list)) floatingSpacing else baseSpacing
-        val previous = getEndSpacing.invoke(decoration) as Int
-        val spacing = base + extraPx
+        val previous = endSpacingField.getInt(decoration)
+        val spacing = baseSpacing(list, decoration) + extraPx
+        endSpacingField.setInt(decoration, spacing)
         if (spacing == previous) return
 
         val wasAtBottom = !list.canScrollVertically(1)
-        setEndSpacing.invoke(decoration, spacing)
-        invalidateItemDecorations.invoke(list)
+        markItemDecorInsetsDirty.invoke(list)
         list.measureAndLayout()
 
         // Keep the last message in view
         if (wasAtBottom && spacing > previous && list.canScrollVertically(1)) list.scrollBy(0, spacing - previous)
+    }
+
+    /** Discord's own end spacing for [list]. */
+    private fun baseSpacing(list: View, decoration: Any): Int {
+        endSpacingField.setInt(decoration, -1)
+        // let setFloatingChatInputEnabled write the right spacing back
+        setFloating.invoke(list, floatingField.getBoolean(list))
+        return endSpacingField.getInt(decoration)
     }
 
     private fun findChatList(view: View): View? {
@@ -103,7 +142,7 @@ internal class ChatListSpacing(classLoader: ClassLoader) {
 
     private fun findIn(view: View): View? {
         if (chatListView.isInstance(view)) return view
-        if (view !is ViewGroup || view.javaClass.name.endsWith("RecyclerView")) return null
+        if (view !is ViewGroup || recyclerView.isInstance(view)) return null
         for (i in 0 until view.childCount) findIn(view.getChildAt(i))?.let { return it }
         return null
     }

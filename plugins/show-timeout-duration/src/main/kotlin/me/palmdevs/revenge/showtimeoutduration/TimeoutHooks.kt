@@ -7,55 +7,65 @@ import android.view.ViewGroup
 import android.widget.RelativeLayout
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
+import io.github.revenge.xposed.api.DexFinder
 import org.json.JSONObject
 import java.util.WeakHashMap
 
 private const val MESSAGE_VIEW = "com.discord.chat.presentation.message.MessageView"
-private const val MESSAGE_VIEW_BINDING = "com.discord.chat.databinding.MessageViewBinding"
 private const val MESSAGE = "com.discord.chat.bridge.Message"
 
 /** LRU cache. */
 private const val CACHE_CAPACITY = 2000
 
 /** Adds a [TimeoutLine] above the author of chat messages whose author is timed out. */
-internal class TimeoutHooks(classLoader: ClassLoader) {
+internal class TimeoutHooks(dexFinder: DexFinder) {
     private val ends = object : LinkedHashMap<String, Long>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>) = size > CACHE_CAPACITY
     }
 
     // Main thread only
     private val lines = WeakHashMap<RelativeLayout, TimeoutLine>()
+    private var ids: ViewIds? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val style = TimeoutLine.Style(classLoader)
+    private val style = TimeoutLine.Style(dexFinder)
 
-    private val messageView = classLoader.loadClass(MESSAGE_VIEW)
-    private val messageIdField = classLoader.loadClass(MESSAGE).getDeclaredField("id").apply { isAccessible = true }
-    private val bindingField = messageView.getDeclaredField("binding").apply { isAccessible = true }
-    private val bindingClass = classLoader.loadClass(MESSAGE_VIEW_BINDING)
-    private val header = bindingClass.getField("header")
-    private val authorName = bindingClass.getField("authorName")
-    private val timeoutIcon = bindingClass.getField("guildCommunicationDisabledIcon")
+    private val messageIdField = dexFinder.classLoader.loadClass(MESSAGE).getDeclaredField("id")
+        .apply { isAccessible = true }
 
     private val unhooks: List<XC_MethodHook.Unhook>
 
     init {
-        val setMessage = messageView.declaredMethods.single { it.name == "setMessage" }
+        val setMessage = dexFinder.findMethod {
+            matcher {
+                declaredClass(MESSAGE_VIEW)
+                usingEqStrings("message", "messageContext", "eventHandler")
+            }
+        } ?: error("MessageView.setMessage not found")
 
         unhooks = listOf(XposedBridge.hookMethod(setMessage, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
                 val view = param.thisObject as RelativeLayout
                 val id = messageIdField.get(param.args[0]) as String
-                val binding = bindingField.get(view) ?: return
+                val ids = ids ?: ViewIds(view).also { ids = it }
+                val header = view.childWithId(ids.header) ?: return
 
                 // Only messages that start a group show their author
-                val showsAuthor = (authorName.get(binding) as View).visibility == View.VISIBLE
+                val showsAuthor = header.findViewById<View>(ids.authorName)?.visibility == View.VISIBLE
                 val end = synchronized(ends) { ends[id] }?.takeIf { showsAuthor && it > System.currentTimeMillis() }
 
-                val line = lines[view] ?: if (end != null) insertLine(view, binding) else return
+                val line = lines[view]
+                    ?: if (end != null) insertLine(view, header, header.findViewById(ids.timeoutIcon) ?: return) else return
                 line.bind(id, showsAuthor, end)
             }
         }))
+    }
+
+    /** IDs of the message views Discord's binding holds. R8 merged the binding classes, the IDs keep their names. */
+    private class ViewIds(view: View) {
+        val header = view.idOf("header")
+        val authorName = view.idOf("author_name")
+        val timeoutIcon = view.idOf("guild_communication_disabled_icon")
     }
 
     /** Stores timeout ends from JS, and updates lines already showing their messages. */
@@ -68,6 +78,14 @@ internal class TimeoutHooks(classLoader: ClassLoader) {
                 val id = line.messageId ?: continue
                 updates[id]?.let { line.bind(id, line.showsAuthor, it.takeIf { end -> end > 0 }) }
             }
+        }
+    }
+
+    /** Sets the colors JS resolved from Discord's theme, and recolors lines already showing. */
+    fun setColors(text: Int, icon: Int) {
+        style.colors = TimeoutLine.Colors(text, icon)
+        mainHandler.post {
+            for (line in lines.values) line.recolor()
         }
     }
 
@@ -87,15 +105,14 @@ internal class TimeoutHooks(classLoader: ClassLoader) {
         }
     }
 
-    private fun insertLine(view: RelativeLayout, binding: Any): TimeoutLine {
-        val header = header.get(binding) as View
+    private fun insertLine(view: RelativeLayout, header: View, timeoutIcon: View): TimeoutLine {
         val headerParams = header.layoutParams as RelativeLayout.LayoutParams
         val line = TimeoutLine(
             view.context,
             style,
             header,
             headerParams.rules[RelativeLayout.BELOW],
-            timeoutIcon.get(binding) as View,
+            timeoutIcon,
         )
 
         view.addView(line, RelativeLayout.LayoutParams(
@@ -113,3 +130,10 @@ internal class TimeoutHooks(classLoader: ClassLoader) {
         return line
     }
 }
+
+@Suppress("DiscouragedApi")
+private fun View.idOf(name: String) = resources.getIdentifier(name, "id", context.packageName)
+
+// Not findViewById, as nested messages (such as replies) have views with the same IDs
+private fun ViewGroup.childWithId(id: Int): View? =
+    (0 until childCount).asSequence().map(::getChildAt).firstOrNull { it.id == id }

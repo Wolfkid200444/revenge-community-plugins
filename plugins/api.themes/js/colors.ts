@@ -10,11 +10,37 @@ type PluginCleanupApi = PreInitPluginApi['cleanup']
 
 interface SemanticColorContext {
 	isProfileTheme?: boolean
-	gradient?: { customThemeSettings?: object } | null
+	/** Resolved gradient metadata, without `customThemeSettings`. */
+	gradient?: { theme?: string } | null
 }
 
-/** Custom theme settings for backgrounds where gradients keep theme colors. */
-export const ownGradientSettings = new WeakSet<object>()
+/** Custom theme settings for backgrounds, mapped to their dimming. */
+export const ownGradientSettings = new WeakMap<object, number>()
+/** Resolved metadata of {@link ownGradientSettings}, mapped to their dimming. */
+export const ownGradients = new WeakMap<object, number>()
+
+/** Theme's main background matching Discord's surfaces. */
+export const SurfaceColor = 'BACKGROUND_BASE_LOWER'
+
+/** Surfaces over backgrounds. */
+const DimmedSurfaces = new Set([
+	// TRANSLUCENT
+	// Server header
+	'BACKGROUND_BASE_LOW',
+	// Server list
+	'BACKGROUND_BASE_LOWEST',
+	// Channel list
+	'CHANNEL_BACKGROUND_DEFAULT',
+	// SOLID
+	'MOBILE_FLOATINGBAR_BACKGROUND',
+	'MOBILE_FLOATINGBAR_BACKGROUND_HIGHER',
+])
+
+/** Surfaces over mix layers, which already dim like {@link DimmedSurfaces}. */
+const ClearedSurfaces = new Set([
+	// Channel list
+	'PANEL_BG',
+])
 
 // ../discord_common/js/packages/tokens/native.tsx
 interface TokensModule {
@@ -59,17 +85,37 @@ export function patchColorTokens(cleanup: PluginCleanupApi) {
 					instead(internal, 'resolveSemanticColor', (args, original) => {
 						const [theme, color, context] = args
 						const gradient = context?.gradient
+						const dimming = gradient ? ownGradients.get(gradient) : undefined
+
+						if (dimming !== undefined) {
+							const name = internal.getSemanticColorName(color)
+							const alpha = ClearedSurfaces.has(name)
+								? 0
+								: DimmedSurfaces.has(name)
+									? dimming
+									: undefined
+							const dimmed =
+								alpha !== undefined && dimmedSurfaceOf(theme, context, alpha)
+							if (dimmed) return dimmed
+						}
+
 						// User-picked colors for profile themes, and Discord's gradient themes
 						if (
 							colors?.semantic &&
 							!context?.isProfileTheme &&
-							(!gradient ||
-								(gradient.customThemeSettings !== undefined &&
-									ownGradientSettings.has(gradient.customThemeSettings)))
+							(!gradient || dimming !== undefined)
 						) {
 							const name = internal.getSemanticColorName(color)
 							const value = colors.semantic[theme]?.[name]
-							if (value) return value
+							if (value) {
+								// Keep gradient surfaces translucent unless the theme specifies alpha.
+								if (gradient && value.length === 7) {
+									const resolved = Reflect.apply(original, internal, args)
+									if (/^#[0-9a-f]{8}$/i.test(resolved))
+										return value + resolved.slice(7)
+								}
+								return value
+							}
 						}
 
 						return Reflect.apply(original, internal, args)
@@ -78,6 +124,27 @@ export function patchColorTokens(cleanup: PluginCleanupApi) {
 			},
 			{ cached: true },
 		),
+	)
+}
+
+/** Theme surface color with {@link alpha}. */
+function dimmedSurfaceOf(
+	theme: ThemeBase,
+	context: SemanticColorContext | undefined,
+	alpha: number,
+) {
+	const { colors: tokens, internal } = tokensModule!.default
+	const surface = internal.resolveSemanticColor(theme, tokens[SurfaceColor]!, {
+		...context,
+		gradient: null,
+	})
+	if (!/^#[0-9a-f]{6}/i.test(surface)) return
+
+	return (
+		surface.slice(0, 7) +
+		Math.round(alpha * 255)
+			.toString(16)
+			.padStart(2, '0')
 	)
 }
 

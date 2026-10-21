@@ -26,14 +26,14 @@ val shikiCodeblocks = plugin {
     var taps: CodeBlockTaps? = null
 
     start {
-        val codeFont = codeFontOf(classLoader)
+        val codeFont = codeFontOf(dexFinder)
         taps = runCatching {
-            CodeBlockTaps(classLoader) { block ->
+            CodeBlockTaps(dexFinder) { block ->
                 withAppActivity { activity -> activity.runOnUiThread { showCodeViewer(activity, block, codeFont) } }
             }
         }.onFailure { errors.tryEmit(it) }.getOrNull()
 
-        unhooks = hookCodeStyle(classLoader, cache, taps, log)
+        unhooks = hookCodeStyle(dexFinder, cache, taps) + listOfNotNull(taps?.unhook)
 
         registerNativeMethod("palmdevs.shiki.put") { args ->
             val json by args.asDelegate().string()

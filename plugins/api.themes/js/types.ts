@@ -31,8 +31,8 @@ export interface ThemeBackground {
 	/** Blur radius. @default 0 */
 	blur?: number
 	/**
-	 * Strength of Discord's gradient theme dimming behind surfaces without their own, from 0 to 1.
-	 * @default 1
+	 * Opacity of surfaces over the image, from 0 to 1.
+	 * @default 0.7
 	 */
 	dimming?: number
 }

@@ -11,7 +11,7 @@ val whoReacted = plugin {
     var hooks: ReactionHooks? = null
 
     start {
-        hooks = ReactionHooks(classLoader)
+        hooks = ReactionHooks(dexFinder)
 
         registerNativeMethod("palmdevs.who-reacted.put") { args ->
             val json by args.asDelegate().string()

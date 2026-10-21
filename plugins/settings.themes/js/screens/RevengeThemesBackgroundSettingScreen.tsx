@@ -152,7 +152,7 @@ export default function RevengeThemesBackgroundSettingScreen({
 						/>
 						<SliderRow
 							label="Dimming"
-							value={settings?.dimming ?? base?.dimming ?? 1}
+							value={settings?.dimming ?? base?.dimming ?? 0.7}
 							min={0}
 							max={1}
 							step={0.05}

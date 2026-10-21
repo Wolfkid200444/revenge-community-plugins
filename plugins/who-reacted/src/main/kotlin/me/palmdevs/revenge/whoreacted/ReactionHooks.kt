@@ -3,30 +3,28 @@ package me.palmdevs.revenge.whoreacted
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.ViewGroup
 import android.widget.LinearLayout
+import android.widget.TextSwitcher
 import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
+import io.github.revenge.xposed.api.DexFinder
 import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.WeakHashMap
 
-private const val CHAT = "com.discord.chat"
-private const val CHAT_LIST_VIEW = "$CHAT.presentation.list.ChatListView"
-private const val ACCESSORIES_ADAPTER = "$CHAT.presentation.message.MessageAccessoriesAdapter"
-private const val MESSAGE_PART_HOLDER = "$CHAT.presentation.message.viewholder.MessagePartViewHolder"
-private const val REACTIONS_HOLDER = "$CHAT.presentation.message.viewholder.ReactionsViewHolder"
-private const val MESSAGE_REACTION_EMOJI = "$CHAT.bridge.reaction.MessageReactionEmoji"
-private const val REACTION_VIEW = "com.discord.reactions.ReactionView"
-private const val REACTION_VIEW_BINDING = "com.discord.reactions.databinding.ReactionViewBinding"
+private const val SHORTCUTS_FLEXBOX = "com.discord.reactions.ShortcutsFlexbox"
+private const val CHAT_LIST_VIEW_MANAGER = "com.discord.chat.presentation.list.ChatListViewManager"
 
 /** Avatar LRU cache. */
 private const val CACHE_CAPACITY = 2000
 
 /** Adds the avatars JS stored to the reaction pills of chat messages. */
 @Suppress("CanConvertToMultiDollarString")
-internal class ReactionHooks(classLoader: ClassLoader) {
+internal class ReactionHooks(dexFinder: DexFinder) {
     private val avatars = object : LinkedHashMap<String, List<String>>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<String>>) = size > CACHE_CAPACITY
     }
@@ -41,73 +39,118 @@ internal class ReactionHooks(classLoader: ClassLoader) {
 
     private val bindingMessageId = ThreadLocal<String?>()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val draweeConstructor = AvatarStack.draweeConstructor(classLoader)
+    private val draweeConstructor = AvatarStack.draweeConstructor(dexFinder.classLoader)
 
-    private val chatListView = classLoader.loadClass(CHAT_LIST_VIEW)
-    private val reactionsHolder = classLoader.loadClass(REACTIONS_HOLDER)
-    private val adapterMessageId = classLoader.loadClass(ACCESSORIES_ADAPTER).getDeclaredField("messageId")
-        .apply { isAccessible = true }
-    private val emojiClass = classLoader.loadClass(MESSAGE_REACTION_EMOJI)
-    private val emojiId = emojiClass.getMethod("getId")
-    private val emojiName = emojiClass.getMethod("getName")
+    private val chatListView = dexFinder.classLoader.loadClass(CHAT_LIST_VIEW_MANAGER).declaredMethods
+        .single { it.name == "setFloatingChatInputEnabled" && !it.isBridge }
+        .parameterTypes[0]
 
-    // The pill's count, whose color and font the "+N" pill takes
-    private val reactionViewBinding = classLoader.loadClass(REACTION_VIEW).getDeclaredField("binding")
-        .apply { isAccessible = true }
-    private val reactionCount = classLoader.loadClass(REACTION_VIEW_BINDING).getField("reactionCount1")
+    // Message accessories (reactions, forum post actions, ...) carry their message ID
+    private val accessoryClass = dexFinder.findClass {
+        matcher { usingEqStrings("messageId", "accessoryDescription") }
+    } ?: error("MessageAccessory not found")
+    private val accessoryMessageId = dexFinder.findMethod {
+        matcher {
+            declaredClass(accessoryClass.name)
+            paramCount(0)
+            returnType(String::class.java)
+        }
+    } ?: error("MessageAccessory.getMessageId not found")
+
+    private val emojiClass = dexFinder.findClass {
+        matcher { addUsingString("MessageReactionEmoji(name=") }
+    } ?: error("MessageReactionEmoji not found")
+
+    private val reactionInterface = dexFinder.findClass {
+        matcher {
+            modifiers(Modifier.INTERFACE)
+            addMethod { name("getCount") }
+            addMethod { returnType(emojiClass.name) }
+        }
+    } ?: error("ReactionView.Reaction not found")
+    private val getCount = reactionInterface.getMethod("getCount")
+    private val getEmoji = reactionInterface.methods.single { it.returnType == emojiClass }
+    private val getBurstCount = reactionInterface.methods
+        .single { it.returnType == Int::class.javaPrimitiveType && it.parameterCount == 0 && it != getCount }
 
     private val unhooks: List<XC_MethodHook.Unhook>
 
     init {
-        // [MessageAccessoriesAdapter.onBindViewHolder] binds a message's reactions with [ReactionsViewHolder.bind], which sets each pill with [ReactionView.setReaction].
-        val adapter = classLoader.loadClass(ACCESSORIES_ADAPTER)
-        val onBindViewHolder = adapter.getDeclaredMethod(
-            "onBindViewHolder",
-            classLoader.loadClass(MESSAGE_PART_HOLDER),
-            Int::class.javaPrimitiveType,
-        )
+        // [MessageAccessoriesAdapter.onBindViewHolder] binds reactions via [ShortcutsFlexbox.setReactions].
+        // Pills only see individual reactions, so take message ID from bound accessory.
+        val onBindViewHolder = dexFinder.findMethod {
+            matcher {
+                paramCount(2)
+                usingEqStrings("reactions", "addNewReactionAccessibilityLabel")
+            }
+        } ?: error("MessageAccessoriesAdapter.onBindViewHolder not found")
+        val adapterItems = dexFinder.findField {
+            matcher {
+                declaredClass(onBindViewHolder.declaringClass.name)
+                type(List::class.java)
+            }
+        } ?: error("MessageAccessoriesAdapter.items not found")
 
-        // The pill only sees the reaction. The message ID is taken from the adapter.
-        val reactionView = classLoader.loadClass(REACTION_VIEW)
-        val reactionInterface = classLoader.loadClass("$REACTION_VIEW\$Reaction")
-        val setReaction = reactionView.getDeclaredMethod(
-            "setReaction",
-            reactionInterface,
-            classLoader.loadClass("$REACTION_VIEW\$ReactionsTheme"),
-        )
-        val getEmoji = reactionInterface.getMethod("getEmoji")
-        val getCount = reactionInterface.getMethod("getCount")
-        val getBurstCount = reactionInterface.getMethod("getBurstCount")
+        val setReactions = dexFinder.findMethod {
+            matcher {
+                declaredClass(SHORTCUTS_FLEXBOX)
+                usingEqStrings("reactions", "addNewReactionAccessibilityLabel")
+            }
+        } ?: error("ShortcutsFlexbox.setReactions not found")
 
         unhooks = listOf(
             onBindViewHolder.hook(
                 before = { param ->
-                    if (reactionsHolder.isInstance(param.args[0]))
-                        bindingMessageId.set(adapterMessageId.get(param.thisObject) as String?)
+                    val item = (adapterItems.get(param.thisObject) as List<*>?)?.getOrNull(param.args[1] as Int)
+                    if (accessoryClass.isInstance(item)) bindingMessageId.set(accessoryMessageId.invoke(item) as String?)
                 },
                 after = { bindingMessageId.remove() },
             ),
-            setReaction.hook(after = { param ->
-                val view = param.thisObject as LinearLayout
-                val reaction = param.args[0]
-                val burstCount = getBurstCount.invoke(reaction) as Int
-                // Discord shows reactions with both types as two pills, the burst one has a burst count
-                val burst = burstCount > 0
-                val count = if (burst) burstCount else getCount.invoke(reaction) as Int
-
+            setReactions.hook(after = { param ->
+                val flexbox = param.thisObject as ViewGroup
+                val pills = pills(param.args[0] as List<*>)
                 val messageId = bindingMessageId.get()
-                val emoji = getEmoji.invoke(reaction)
-                if (messageId == null || count == 0 || !emojiClass.isInstance(emoji)) {
-                    synchronized(bound) { bound.remove(view) }
-                    render(view, emptyList(), 0)
-                    return@hook
-                }
 
-                val key = reactionKey(messageId, (emojiId.invoke(emoji) ?: emojiName.invoke(emoji)) as String?, burst)
-                synchronized(bound) { bound[view] = Bound(key, count) }
-                render(view, synchronized(avatars) { avatars[key] }.orEmpty(), count)
+                for (i in 0 until flexbox.childCount) {
+                    val view = flexbox.getChildAt(i) as? LinearLayout ?: continue
+                    val pill = pills.getOrNull(i)
+                    // Pills past the reactions are hidden ones Discord keeps for reuse
+                    if (pill == null || messageId == null || pill.count == 0 || !emojiClass.isInstance(pill.emoji)) {
+                        synchronized(bound) { bound.remove(view) }
+                        render(view, emptyList(), 0)
+                        continue
+                    }
+
+                    val key = reactionKey(messageId, emojiKey(pill.emoji!!), pill.burst)
+                    synchronized(bound) { bound[view] = Bound(key, pill.count) }
+                    render(view, synchronized(avatars) { avatars[key] }.orEmpty(), pill.count)
+                }
             }),
         )
+    }
+
+    private class Pill(val emoji: Any?, val burst: Boolean, val count: Int)
+
+    private fun pills(reactions: List<*>): List<Pill> = reactions.flatMap { reaction ->
+        val count = getCount.invoke(reaction) as Int
+        val burstCount = getBurstCount.invoke(reaction) as Int
+        val emoji = getEmoji.invoke(reaction)
+        when {
+            // both types
+            burstCount > 0 && count > 0 -> listOf(Pill(emoji, true, burstCount), Pill(emoji, false, count))
+            burstCount > 0 -> listOf(Pill(emoji, true, burstCount))
+            else -> listOf(Pill(emoji, false, count))
+        }
+    }
+
+    /**
+     * The emoji's ID, or its name if it has none, matching JS' keys.
+     * Since this is a data class, we can toString to get the field values.
+     */
+    private fun emojiKey(emoji: Any): String? {
+        val text = emoji.toString()
+        val id = ID_PATTERN.find(text)?.groupValues?.get(1)?.takeIf { it != "null" }
+        return id ?: NAME_PATTERN.find(text)?.groupValues?.get(1)
     }
 
     /** Stores avatars from JS, and updates pills already showing their reactions. */
@@ -133,7 +176,7 @@ internal class ReactionHooks(classLoader: ClassLoader) {
 
     /**
      * Lays out the chat lists of [views] again, so their pills fit their new avatars.
-     * 
+     *
      * React Native ignores layout requests from native views, Discord does this after its own updates too
      * (`ChatListView.measureAndLayout`). Views with a pending layout request are measured again.
      */
@@ -187,9 +230,23 @@ internal class ReactionHooks(classLoader: ClassLoader) {
             stacks[view] = it
         }).apply {
             visibility = View.VISIBLE
-            val countText = reactionCount.get(reactionViewBinding.get(view)) as TextView
-            setAvatars(urls, count, countText.currentTextColor, countText.typeface)
+            val countText = countText(view)
+            setAvatars(urls, count, countText?.currentTextColor ?: 0, countText?.typeface)
         }
+    }
+
+    // Count view supplying color and font for "+N" pill
+    private fun countText(view: ViewGroup): TextView? {
+        for (i in 0 until view.childCount) {
+            val child = view.getChildAt(i)
+            if (child is TextSwitcher) return child.currentView as? TextView
+        }
+        return null
+    }
+
+    private companion object {
+        val ID_PATTERN = Regex(""", id=([^,)]*)""")
+        val NAME_PATTERN = Regex("""\(name=(.*?), src=""")
     }
 }
 

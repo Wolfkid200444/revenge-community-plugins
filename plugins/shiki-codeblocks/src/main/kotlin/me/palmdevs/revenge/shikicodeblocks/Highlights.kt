@@ -8,6 +8,8 @@ import org.json.JSONObject
  *
  * [spans] is flat, four ints per token: `start, end, color, fontStyle`, offsets into [text] if set, else the block's content.
  * [backgrounds] is flat too: `start, end, color`. Colors are ARGB, and `fontStyle` bits follow Shiki's `FontStyle`.
+ * 
+ * Colors can be placeholders for Discord's, see [DiscordPalette].
  *
  * [text] is shown instead of the content when it differs, as for ANSI, whose escape sequences aren't shown.
  */

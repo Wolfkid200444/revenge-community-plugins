@@ -12,7 +12,12 @@ val showTimeoutDuration = plugin {
     var hooks: TimeoutHooks? = null
 
     start {
-        hooks = TimeoutHooks(classLoader)
+        hooks = TimeoutHooks(dexFinder)
+
+        registerNativeMethod("palmdevs.timeout.colors") { args ->
+            hooks?.setColors((args[0] as Number).toInt(), (args[1] as Number).toInt())
+            null
+        }
 
         registerNativeMethod("palmdevs.timeout.put") { args ->
             val json by args.asDelegate().string()

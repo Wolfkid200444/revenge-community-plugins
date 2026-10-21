@@ -10,13 +10,13 @@
 		"cocobo1 <767650984175992833> (https://github.com/C0C0B01 \"GitHub\")"
 	],
 	"icon": "PaintPaletteIcon",
-	"version": "1.4.0",
+	"version": "1.4.2",
 	"dependencies": {
 		"revenge.api": {
-			"version": ">=1.1.0 <2"
+			"version": ">=1.2.1 <2"
 		},
 		"discord": {
-			"version": "*"
+			"version": ">=352.2"
 		}
 	},
 	"dist": {

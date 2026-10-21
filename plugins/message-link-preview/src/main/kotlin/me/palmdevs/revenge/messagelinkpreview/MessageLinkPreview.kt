@@ -11,7 +11,7 @@ val messageLinkPreview = plugin {
     var hooks: PreviewHooks? = null
 
     start {
-        hooks = PreviewHooks(classLoader)
+        hooks = PreviewHooks(dexFinder)
 
         registerNativeMethod("palmdevs.message-link-preview.put") { args ->
             val json by args.asDelegate().string()

@@ -1,46 +1,114 @@
+@file:Suppress("CanConvertToMultiDollarString")
 package me.palmdevs.revenge.messagelinkpreview
 
 import android.content.Context
 import android.util.Log
 import android.view.ViewGroup
+import io.github.revenge.xposed.api.DexFinder
+import org.luckypray.dexkit.wrap.DexMethod
+import java.lang.reflect.Method
+import java.lang.reflect.Modifier
+import java.lang.reflect.Proxy
 
 private const val TAG = "MessageLinkPreview"
 
 private const val CHAT = "com.discord.chat"
+private const val MESSAGE = "$CHAT.bridge.Message"
 private const val MESSAGE_VIEW = "$CHAT.presentation.message.MessageView"
-private const val SYSTEM_MESSAGE_VIEW = "$CHAT.presentation.message.system.SystemMessageWrapperView"
-private const val AUTOMOD_MESSAGE_VIEW = "$CHAT.presentation.message.system.AutomodSystemMessageWrapperView"
-private const val EMPTY_EVENT_HANDLER = "$CHAT.presentation.events.ChatEventHandler\$Empty"
 private const val MESSAGE_VIEW_MANAGERS = "$CHAT.messagemanager.MessageViewManagers"
-private const val MESSAGE_ROW = "$CHAT.bridge.row.MessageRow"
-private const val MESSAGE_CONTEXT_KT = "$CHAT.presentation.root.MessageContextKt"
-
-// Default onChainPart (ONLY), allowChildGestures (true) and renderContentOnly (false)
-private const val SET_MESSAGE_DEFAULTS = 16 or 32 or 64
+private const val MESSAGE_VIEW_MANAGER = "$MESSAGE_VIEW_MANAGERS\$MessageViewManager"
+private const val SYSTEM_MESSAGE_VIEW_MANAGER = "$MESSAGE_VIEW_MANAGERS\$SystemMessageViewManager"
+private const val AUTOMOD_MESSAGE_VIEW_MANAGER = "$MESSAGE_VIEW_MANAGERS\$AutoModerationSystemMessageViewManager"
 
 /** Discord's message views, the same ones `DCDMessageView` and friends use. */
-internal class MessageViews(classLoader: ClassLoader) {
+internal class MessageViews(dexFinder: DexFinder) {
+    private val classLoader = dexFinder.classLoader
+
     private val messageViewClass = classLoader.loadClass(MESSAGE_VIEW)
-    private val setMessage = messageViewClass.declaredMethods.single { it.name == "setMessage\$default" }
-    private val setAccessoriesPool = messageViewClass.methods.single { it.name == "setAccessoriesRecycledViewPool" }
+    private val setMessage = dexFinder.findMethod {
+        matcher {
+            declaredClass(MESSAGE_VIEW)
+            usingEqStrings("message", "messageContext", "eventHandler")
+        }
+    } ?: error("MessageView.setMessage not found")
 
-    private val systemMessageViewClass = classLoader.loadClass(SYSTEM_MESSAGE_VIEW)
-    private val setSystemMessage = systemMessageViewClass.methods.single { it.name == "setMessage" }
-    private val automodMessageViewClass = classLoader.loadClass(AUTOMOD_MESSAGE_VIEW)
-    private val setAutomodMessage = automodMessageViewClass.methods.single { it.name == "setMessage" }
-    private val emptyEventHandler = classLoader.loadClass(EMPTY_EVENT_HANDLER).getField("INSTANCE").get(null)
+    val contextClass: Class<*> = setMessage.parameterTypes[1]
+    val eventHandlerClass: Class<*> = setMessage.parameterTypes[2]
+    val componentProviderClass: Class<*> = setMessage.parameterTypes[3]
 
-    private val managersClass = classLoader.loadClass(MESSAGE_VIEW_MANAGERS)
-    private val managers = managersClass.getField("INSTANCE").get(null)
-    private val convertRow = managersClass.getDeclaredMethod(
-        "access\$convertRowJsonToMessageRow",
-        managersClass,
-        String::class.java,
-    )
-    private val messageRowClass = classLoader.loadClass(MESSAGE_ROW)
-    private val rowMessage = messageRowClass.getMethod("getMessage")
-    private val messageContext = classLoader.loadClass(MESSAGE_CONTEXT_KT)
-        .getMethod("getMessageContext", messageRowClass)
+    // Argument [DCDMessageView] passes for chain part (ONLY).
+    private val onlyChainPart: Any = run {
+        val chainPart = dexFinder.findClass {
+            matcher {
+                superClass("java.lang.Enum")
+                usingEqStrings("ONLY", "START", "MIDDLE", "END")
+            }
+        } ?: error("ChainPart not found")
+        val only = chainPart.enumConstants!!.first { (it as Enum<*>).name == "ONLY" }
+        // Discord Kotlin's Function0
+        val function0 = setMessage.parameterTypes[4]
+
+        Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->
+            when (method.name) {
+                "invoke" -> only
+                "equals" -> proxy === args?.get(0)
+                "hashCode" -> System.identityHashCode(proxy)
+                else -> "ChainPart.ONLY"
+            }
+        }
+    }
+
+    private val setSystemMessage = dexFinder.findMethod {
+        matcher {
+            addCaller(DexMethod(setRowOf(SYSTEM_MESSAGE_VIEW_MANAGER)).serialize())
+            paramTypes(MESSAGE, contextClass.name, eventHandlerClass.name)
+        }
+    } ?: error("SystemMessageWrapperView.setMessage not found")
+    private val systemMessageViewClass = setSystemMessage.declaringClass
+
+    private val setAutomodMessage = dexFinder.findMethod {
+        matcher {
+            addCaller(DexMethod(setRowOf(AUTOMOD_MESSAGE_VIEW_MANAGER)).serialize())
+            paramTypes(MESSAGE, contextClass.name, eventHandlerClass.name, componentProviderClass.name, "boolean")
+        }
+    } ?: error("AutomodSystemMessageWrapperView.setMessage not found")
+    private val automodMessageViewClass = setAutomodMessage.declaringClass
+
+    private val emptyEventHandler = (dexFinder.findClass {
+        matcher {
+            addInterface(eventHandlerClass.name)
+            fieldCount(1)
+        }
+    } ?: error("ChatEventHandler.Empty not found")).let { empty ->
+        empty.declaredFields.single { it.type == empty }.apply { isAccessible = true }.get(null)
+    }
+
+    // [DCDMessageView] row parser
+    private val setRow = setRowOf(MESSAGE_VIEW_MANAGER)
+    private val convertRow = dexFinder.findMethod {
+        matcher {
+            addCaller(DexMethod(setRow).serialize())
+            modifiers(Modifier.STATIC)
+            paramTypes(String::class.java)
+        }
+    } ?: error("MessageViewManagers.convertRowJsonToMessageRow not found")
+    private val messageRowClass = convertRow.returnType
+    private val rowMessage = dexFinder.findField {
+        matcher {
+            declaredClass(messageRowClass.name)
+            addReadMethod(DexMethod(setRow).serialize())
+        }
+    } ?: error("MessageRow.message not found")
+    private val messageContext = dexFinder.findMethod {
+        matcher {
+            addCaller(DexMethod(setRow).serialize())
+            paramTypes(messageRowClass.name)
+            returnType(contextClass.name)
+        }
+    } ?: error("MessageContextKt.getMessageContext not found")
+
+    private fun setRowOf(manager: String): Method = classLoader.loadClass(manager).declaredMethods
+        .single { it.name == "setRow" && !it.isBridge }
 
     /** Returns the preview's `Message` and `MessageContext`. */
     fun parse(preview: Preview): Pair<Any, Any>? {
@@ -49,8 +117,8 @@ internal class MessageViews(classLoader: ClassLoader) {
         if (row == null || preview.parseFailed) return null
 
         return try {
-            val messageRow = convertRow.invoke(null, managers, row)
-            (rowMessage.invoke(messageRow)!! to messageContext.invoke(null, messageRow)!!)
+            val messageRow = convertRow.invoke(null, row)
+            (rowMessage.get(messageRow)!! to messageContext.invoke(null, messageRow)!!)
                 .also { preview.parsed = it }
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to parse row", e)
@@ -72,30 +140,14 @@ internal class MessageViews(classLoader: ClassLoader) {
         parsed: Pair<Any, Any>,
         eventHandler: Any?,
         componentProvider: Any?,
-        pool: Any?,
     ) {
         val (message, context) = parsed
         val handler = eventHandler ?: emptyEventHandler
 
         when (kind) {
-            Kind.MESSAGE -> {
-                if (pool != null) setAccessoriesPool.invoke(view, pool)
-                setMessage.invoke(
-                    null,
-                    view,
-                    message,
-                    context,
-                    handler,
-                    componentProvider,
-                    null,
-                    false,
-                    false,
-                    SET_MESSAGE_DEFAULTS,
-                    null,
-                )
-            }
+            Kind.MESSAGE -> setMessage.invoke(view, message, context, handler, componentProvider, onlyChainPart, true, false)
             Kind.SYSTEM -> setSystemMessage.invoke(view, message, context, handler)
-            Kind.AUTOMOD -> setAutomodMessage.invoke(view, message, context, handler)
+            Kind.AUTOMOD -> setAutomodMessage.invoke(view, message, context, handler, null, true)
         }
     }
 

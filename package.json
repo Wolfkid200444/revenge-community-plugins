@@ -6,7 +6,8 @@
 		"build": "revenge-plugin build",
 		"build:dev": "revenge-plugin build --dev",
 		"generate-index": "revenge-plugin generate-index",
-		"plan-releases": "revenge-plugin plan-releases",
+		"plan-releases": "revenge-plugin plan-releases --plugins-dir plugins",
+		"update-readme": "bun .github/scripts/update-readme.ts --plugins-dir plugins",
 		"serve": "revenge-plugin serve",
 		"lint": "biome check",
 		"lint:types": "tsc -b plugins/*/tsconfig.json && tsc -p cli --noEmit"

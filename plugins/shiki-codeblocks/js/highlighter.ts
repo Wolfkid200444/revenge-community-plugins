@@ -1,6 +1,7 @@
 import { createHighlighterCoreSync } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
 import { getIndex, readAsset } from './assets'
+import { DiscordTheme, DiscordThemeName } from './discord'
 import { construct, precompile } from './regex'
 import type {
 	LanguageRegistration,
@@ -64,18 +65,23 @@ export function createHighlighter() {
 
 	const loadTheme = (name: string) => {
 		if (!shiki.getLoadedThemes().includes(name))
-			shiki.loadThemeSync(readAsset<ThemeRegistration>(`themes/${name}`))
+			shiki.loadThemeSync(
+				name === DiscordThemeName
+					? DiscordTheme
+					: readAsset<ThemeRegistration>(`themes/${name}`),
+			)
 	}
 
 	/**
 	 * Highlights a code block. Blocks in languages that aren't shipped, or too long to tokenize,
 	 * are plain but still in the theme's colors, to look like the rest.
+	 * In Discord's theme, leave blocks to Discord (`null`) to highlight unsupported languages.
 	 */
 	return function highlight(
 		lang: string,
 		content: string,
 		theme: ThemeName,
-	): Highlight {
+	): Highlight | null {
 		loadTheme(theme)
 
 		const id = lang.trim().toLowerCase()
@@ -84,6 +90,7 @@ export function createHighlighter() {
 
 		const name = getIndex().languages[id]
 		if (!name || content.length > MaxContentLength) {
+			if (theme === DiscordThemeName) return null
 			const { fg, bg } = shiki.getTheme(theme)
 			return {
 				lang: lang.trim(),
