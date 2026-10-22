@@ -5,7 +5,7 @@
 	"description": "Avatars in user mentions, role icons in role mentions, and group icons in group DM links.",
 	"author": "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")",
 	"icon": "AtIcon",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"dependencies": {
 		"revenge.api": {
 			"version": ">=1.2.1 <2"

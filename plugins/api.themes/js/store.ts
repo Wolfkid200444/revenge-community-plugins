@@ -516,12 +516,15 @@ export function previewIconsOf(
 function fontFamiliesOf(plugin: string, pack: FontPackDefinition) {
 	const families: Record<string, FontSource['variants']> = {}
 	for (const [family, variants] of Object.entries(pack.families))
-		families[family] = variants.map(variant => ({
-			path: resolvePath(plugin, variant.path),
-			weight: variant.weight ?? 400,
-			italic: variant.italic ?? false,
-			axes: variant.axes ?? {},
-		}))
+		families[family] =
+			variants === 'system-ui'
+				? [{ path: 'system-ui', weight: 400, italic: false, axes: {} }]
+				: variants.map(variant => ({
+						path: resolvePath(plugin, variant.path),
+						weight: variant.weight ?? 400,
+						italic: variant.italic ?? false,
+						axes: variant.axes ?? {},
+					}))
 	return families
 }
 

@@ -21,6 +21,7 @@ export interface ContentNode {
 	type?: string
 	content?: unknown
 	inContent?: ContentNode[] | null
+	items?: ContentNode[][]
 	userId?: string
 	roleId?: string
 	guildId?: string | null
@@ -76,6 +77,12 @@ function withIcon(node: ContentNode): ContentNode {
 	if (Array.isArray(node.content)) {
 		const content = withIcons(node.content)
 		if (content !== node.content) return { ...node, content }
+	}
+
+	if (node.type === 'list' && node.items) {
+		const items = node.items.map(withIcons)
+		if (items.some((item, i) => item !== node.items![i]))
+			return { ...node, items }
 	}
 
 	return node

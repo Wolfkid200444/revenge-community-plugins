@@ -63,8 +63,11 @@ export interface FontVariant {
 export interface FontPackDefinition {
 	name: string
 	description?: string
-	/** Maps requested font family name to its variants, such as `ggsans-Normal`. */
-	families: Record<string, FontVariant[]>
+	/**
+	 * Maps requested font family name to its variants, such as `ggsans-Normal`.
+	 * Pass `'system-ui'` to use the device font.
+	 */
+	families: Record<string, FontVariant[] | 'system-ui'>
 }
 
 export interface IconPackDefinition {
@@ -127,6 +130,7 @@ export interface FontSource {
 	plugin: string
 	group: string
 	pack: string
+	/** A single `system-ui` path stands for the device font. */
 	variants: Required<FontVariant>[]
 }
 

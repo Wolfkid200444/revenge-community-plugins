@@ -1,5 +1,4 @@
 import type {
-	FontPackDefinition,
 	FontVariant,
 	ThemeBackground,
 	ThemeColors,
@@ -115,8 +114,8 @@ export function legacyThemeBackground(
  */
 export function legacyFontFamilies(
 	files: Record<string, string>,
-): FontPackDefinition['families'] {
-	const families: FontPackDefinition['families'] = {}
+): Record<string, FontVariant[]> {
+	const families: Record<string, FontVariant[]> = {}
 
 	for (const [name, path] of Object.entries(files)) {
 		const italic = name.endsWith('Italic') && name !== 'Italic'

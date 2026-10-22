@@ -1,0 +1,24 @@
+{
+	"format": 1,
+	"id": "palmdevs.message-logger",
+	"name": "Message Logger",
+	"description": "Keep deleted messages, attachments, and edit history.",
+	"author": "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")",
+	"icon": "ChatXIcon",
+	"version": "1.0.0",
+	"dependencies": {
+		"revenge.api": {
+			"version": ">=1.2.1 <2"
+		},
+		"discord": {
+			"version": ">=352.2"
+		}
+	},
+	"dist": {
+		"script": "index.js",
+		"android": {
+			"path": "plugin.jar",
+			"class": "me.palmdevs.revenge.messagelogger.MessageLogger"
+		}
+	}
+}

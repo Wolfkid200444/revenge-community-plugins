@@ -1,0 +1,20 @@
+{
+	"format": 1,
+	"id": "palmdevs.reactions-sheet-fix",
+	"name": "Reactions Sheet Fix",
+	"description": "Fixes the reactions sheet loading forever when users reacted after it was first opened.",
+	"author": "Palm <629368283354628116> (https://github.com/sponsors/PalmDevs \"Donations\") (https://palmdevs.me \"Website\") (https://github.com/PalmDevs \"GitHub\")",
+	"icon": "WrenchIcon",
+	"version": "1.0.0",
+	"dependencies": {
+		"revenge.api": {
+			"version": ">=1 <2"
+		},
+		"discord": {
+			"version": "*"
+		}
+	},
+	"dist": {
+		"script": "index.js"
+	}
+}

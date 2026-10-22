@@ -1,0 +1,36 @@
+# Publishes the Themes API types to their own repository, so external theme plugins can depend on them.
+
+name: Publish Themes API types
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/api.themes'
+      - '.github/scripts/publish-themes-types.sh'
+      - '.github/workflows/publish-themes-types.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-themes-types
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  THEMES_TYPES_REPO: revenge-mod/revenge-themes-types
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build and push types
+        env:
+          THEMES_TYPES_PUSH_TOKEN: ${{ secrets.THEMES_TYPES_PUSH_TOKEN }}
+        run: .github/scripts/publish-themes-types.sh

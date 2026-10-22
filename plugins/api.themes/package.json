@@ -1,5 +1,12 @@
 {
 	"name": "@revenge-mod/themes-api",
+	"scripts": {
+		"build:types": "bun scripts/build-types.ts"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.5",
+		"rolldown": "^1.2.15"
+	},
 	"exports": {
 		".": {
 			"default": "./js/api.d.ts"
